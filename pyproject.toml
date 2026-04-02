@@ -1,0 +1,89 @@
+[project]
+name = "codeqa"
+version = "0.1.0"
+description = "Multi-agent RAG over source code with call-graph context expansion"
+requires-python = ">=3.14"
+
+dependencies = [
+    # Parsing. Grammars ship queries/tags.scm, which is what makes
+    # multi-language support one code path instead of one parser per language.
+    # Phase 2 evaluates tree-sitter-language-pack as a bulk source of grammars;
+    # until then the individually verified ones are pinned explicitly.
+    "tree-sitter>=0.26",
+    "tree-sitter-python>=0.25",
+
+    # Storage. Raw psycopg over an ORM: the vector, RRF and recursive-CTE
+    # queries are the interesting part, and an ORM would obscure them.
+    "psycopg[binary,pool]>=3.3",
+    "pgvector>=0.5",
+    "redis>=6.0",
+
+    # API
+    "fastapi>=0.141",
+    "uvicorn[standard]>=0.40",
+    "sse-starlette>=3.0",
+    "pydantic>=2.12",
+    "pydantic-settings>=2.7",
+
+    # Agents / LLM
+    "langgraph>=1.2",
+    "litellm>=1.96",
+
+    # Observability
+    "structlog>=25.1",
+    "opentelemetry-sdk>=1.30",
+    "opentelemetry-instrumentation-fastapi>=0.52b0",
+    "opentelemetry-exporter-otlp>=1.30",
+
+    # CLI
+    "typer>=0.15",
+    "rich>=14.0",
+]
+
+[project.optional-dependencies]
+# Local embeddings are used for development, CI and eval reproducibility. The
+# deployed image omits this extra and uses a hosted embedding API instead,
+# which keeps ~2GB of torch out of the production container.
+local-embeddings = [
+    "sentence-transformers>=5.7",
+]
+
+dev = [
+    "pytest>=8.4",
+    "pytest-asyncio>=1.0",
+    "pytest-cov>=6.0",
+    "httpx>=0.28",
+    # Test-only: the reference implementation that the production Postgres
+    # recursive-CTE traversal is differential-tested against.
+    "networkx>=3.6",
+    "ruff>=0.9",
+    "mypy>=1.14",
+]
+
+[project.scripts]
+codeqa = "codeqa.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/codeqa"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "integration: requires Postgres and Redis (deselect with '-m \"not integration\"')",
+]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
