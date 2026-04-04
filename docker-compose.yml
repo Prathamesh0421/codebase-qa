@@ -1,0 +1,79 @@
+# Local stack: Postgres/pgvector, Redis, Jaeger.
+#
+# The Postgres image tag is pinned deliberately. pgvector ships as two
+# independent things -- the Python client (a PyPI package) and the Postgres
+# extension (compiled into this image) -- and only the extension version
+# determines which index features exist. Partition-based repo scoping was
+# verified against extension 0.8.6 in this image; an older tag silently
+# changes filtered-search behaviour.
+
+name: codeqa
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: codeqa
+      POSTGRES_PASSWORD: codeqa
+      POSTGRES_DB: codeqa
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready returns before the server accepts real queries during
+      # first-run initdb, so the check runs an actual query instead.
+      test: ["CMD-SHELL", "psql -U codeqa -d codeqa -c 'SELECT 1' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    # Cache and rate-limit buckets are both reconstructible, so persistence is
+    # off: a restart costs a cold cache, not correctness.
+    command: redis-server --save "" --appendonly no
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.76.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"  # UI
+      - "4317:4317"    # OTLP gRPC
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:16686/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      CODEQA_DATABASE_URL: postgresql://codeqa:codeqa@postgres:5432/codeqa
+      CODEQA_REDIS_URL: redis://redis:6379/0
+      CODEQA_OTEL_ENDPOINT: http://jaeger:4317
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "8000:8000"
+    # Enabled from Phase 14, when there is an API to serve. Until then the
+    # stack is brought up with `docker compose up postgres redis jaeger`.
+    profiles: ["app"]
+
+volumes:
+  pgdata:
