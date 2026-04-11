@@ -21,7 +21,7 @@ Status: `[ ]` not started · `[~]` in progress · `[x]` done and reviewed
 
 ---
 
-## Phase 0 — Scaffold and configuration `[~]`
+## Phase 0 — Scaffold and configuration `[x]`
 
 **Goal:** a runnable skeleton with infrastructure up.
 
@@ -34,7 +34,13 @@ Status: `[ ]` not started · `[~]` in progress · `[x]` done and reviewed
 `os.environ.get`; why there is deliberately no ORM here.
 
 **Done when:** `docker compose up` gives a healthy Postgres with the `vector`
-extension, a Redis, and a Jaeger UI.
+extension, a Redis, and a Jaeger UI. ✅ *All three healthy in 6s; `codeqa
+migrate` applies the schema against the compose Postgres and the dimension
+guard rejects a mismatched config.*
+
+**Built:** `pyproject.toml`, `config.py` (typed settings, closed-set retrieval
+strategy), `.env.example`, `docker-compose.yml`, `Dockerfile` (multi-stage, no
+torch in runtime), `cli.py` (`codeqa migrate` / `codeqa config`), `README.md`.
 
 ---
 

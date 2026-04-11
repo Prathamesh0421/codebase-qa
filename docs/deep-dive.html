@@ -1,0 +1,1417 @@
+<title>CodeQA Deep Dive</title>
+
+<style>
+  :root {
+    --paper:      #F4F6F9;
+    --surface:    #FFFFFF;
+    --surface-2:  #EDF0F5;
+    --ink:        #14171F;
+    --ink-soft:   #3D4557;
+    --muted:      #626B7E;
+    --rule:       #DDE2EA;
+    --rule-soft:  #E9ECF2;
+
+    --accent:     #2B4FD4;
+    --accent-dim: #E6EBFB;
+    --amber:      #9A6206;
+    --amber-dim:  #FAF0DC;
+    --rose:       #B03428;
+    --rose-dim:   #FBE9E7;
+    --emerald:    #0B6E5F;
+    --emerald-dim:#E0F2ED;
+
+    --shadow: 0 1px 2px rgba(20,23,31,.05), 0 8px 24px -12px rgba(20,23,31,.12);
+
+    --font-display: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-body: "Iowan Old Style", "Palatino Linotype", Charter, Georgia, serif;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+    --measure: 68ch;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0E1016;
+      --surface:    #161A23;
+      --surface-2:  #1D2230;
+      --ink:        #E7EAF1;
+      --ink-soft:   #BFC6D4;
+      --muted:      #8D97AB;
+      --rule:       #2A303D;
+      --rule-soft:  #222836;
+
+      --accent:     #8AA5FF;
+      --accent-dim: #1B2540;
+      --amber:      #E0A73F;
+      --amber-dim:  #302512;
+      --rose:       #F0837A;
+      --rose-dim:   #351C1A;
+      --emerald:    #52C4AC;
+      --emerald-dim:#0F2C28;
+
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #0E1016;
+    --surface:    #161A23;
+    --surface-2:  #1D2230;
+    --ink:        #E7EAF1;
+    --ink-soft:   #BFC6D4;
+    --muted:      #8D97AB;
+    --rule:       #2A303D;
+    --rule-soft:  #222836;
+
+    --accent:     #8AA5FF;
+    --accent-dim: #1B2540;
+    --amber:      #E0A73F;
+    --amber-dim:  #302512;
+    --rose:       #F0837A;
+    --rose-dim:   #351C1A;
+    --emerald:    #52C4AC;
+    --emerald-dim:#0F2C28;
+
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: 17px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .shell {
+    display: grid;
+    grid-template-columns: 250px minmax(0, 1fr);
+    gap: 48px;
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 32px;
+    align-items: start;
+  }
+
+  /* ---------------------------------------------------------- nav */
+
+  .toc {
+    position: sticky;
+    top: 0;
+    max-height: 100vh;
+    overflow-y: auto;
+    padding: 40px 0 40px;
+    font-family: var(--font-display);
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  .toc-brand {
+    font-weight: 700;
+    letter-spacing: -.01em;
+    font-size: 15px;
+    color: var(--ink);
+    margin-bottom: 4px;
+  }
+
+  .toc-sub {
+    color: var(--muted);
+    font-size: 12px;
+    margin-bottom: 24px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .toc ol {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .toc a {
+    display: flex;
+    gap: 10px;
+    padding: 5px 10px;
+    border-radius: 5px;
+    color: var(--ink-soft);
+    text-decoration: none;
+    transition: background .12s, color .12s;
+  }
+
+  .toc a:hover { background: var(--surface-2); color: var(--ink); }
+  .toc a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  .toc-num {
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+    padding-top: 1px;
+    min-width: 14px;
+  }
+
+  /* ---------------------------------------------------------- content */
+
+  main {
+    padding: 40px 0 120px;
+    min-width: 0;
+  }
+
+  .masthead {
+    padding-bottom: 32px;
+    margin-bottom: 48px;
+    border-bottom: 2px solid var(--ink);
+  }
+
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 14px;
+  }
+
+  h1 {
+    font-family: var(--font-display);
+    font-size: clamp(30px, 4.6vw, 44px);
+    line-height: 1.08;
+    letter-spacing: -.028em;
+    font-weight: 700;
+    margin: 0 0 16px;
+    text-wrap: balance;
+  }
+
+  .standfirst {
+    font-size: 19px;
+    line-height: 1.55;
+    color: var(--ink-soft);
+    margin: 0;
+    max-width: var(--measure);
+  }
+
+  section { margin-bottom: 64px; scroll-margin-top: 24px; }
+
+  h2 {
+    font-family: var(--font-display);
+    font-size: 25px;
+    letter-spacing: -.02em;
+    font-weight: 680;
+    margin: 0 0 8px;
+    padding-top: 8px;
+    text-wrap: balance;
+  }
+
+  .sec-note {
+    font-family: var(--font-display);
+    font-size: 13.5px;
+    color: var(--muted);
+    margin: 0 0 28px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--rule);
+    max-width: var(--measure);
+  }
+
+  h3 {
+    font-family: var(--font-display);
+    font-size: 18px;
+    font-weight: 650;
+    letter-spacing: -.012em;
+    margin: 36px 0 10px;
+    text-wrap: balance;
+  }
+
+  h4 {
+    font-family: var(--font-display);
+    font-size: 15px;
+    font-weight: 650;
+    margin: 24px 0 8px;
+  }
+
+  p, li { max-width: var(--measure); }
+  p { margin: 0 0 16px; }
+  ul, ol { margin: 0 0 16px; padding-left: 22px; }
+  li { margin-bottom: 7px; }
+
+  strong { font-weight: 600; color: var(--ink); }
+  em { font-style: italic; }
+
+  a { color: var(--accent); text-underline-offset: 2px; }
+
+  code {
+    font-family: var(--font-mono);
+    font-size: .85em;
+    background: var(--surface-2);
+    padding: .12em .38em;
+    border-radius: 4px;
+    word-break: break-word;
+  }
+
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    margin: 0 0 20px;
+    box-shadow: var(--shadow);
+  }
+
+  pre code {
+    background: none;
+    padding: 0;
+    font-size: 13px;
+    line-height: 1.6;
+    word-break: normal;
+  }
+
+  .scroll-x { overflow-x: auto; margin: 0 0 20px; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-family: var(--font-display);
+    font-size: 14px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+  }
+
+  th, td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--rule-soft);
+    vertical-align: top;
+  }
+
+  th {
+    font-weight: 640;
+    font-size: 12px;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: var(--muted);
+    background: var(--surface-2);
+  }
+
+  tbody tr:last-child td { border-bottom: none; }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; }
+
+  .win { color: var(--emerald); font-weight: 640; }
+  .fail { color: var(--rose); font-weight: 640; }
+
+  /* ---------------------------------------------------------- decision */
+
+  .decision {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    border-radius: 8px;
+    padding: 20px 22px 6px;
+    margin: 0 0 20px;
+    box-shadow: var(--shadow);
+  }
+
+  .decision h3 { margin-top: 0; }
+
+  .dl-grid {
+    display: grid;
+    grid-template-columns: 96px minmax(0, 1fr);
+    gap: 4px 16px;
+    font-size: 15.5px;
+    margin-bottom: 14px;
+  }
+
+  .dl-grid dt {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding-top: 5px;
+  }
+
+  .dl-grid dd { margin: 0; }
+  .dl-grid dd p:last-child { margin-bottom: 0; }
+  .dl-grid dd ul { margin-bottom: 0; }
+
+  dt.k-give { color: var(--rose); }
+  dt.k-ask { color: var(--accent); }
+
+  /* ---------------------------------------------------------- war story */
+
+  .story {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--amber);
+    border-radius: 8px;
+    padding: 20px 22px 8px;
+    margin: 0 0 22px;
+    box-shadow: var(--shadow);
+  }
+
+  .story h3 { margin-top: 0; }
+
+  .story-tag {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 4px;
+    background: var(--amber-dim);
+    color: var(--amber);
+    margin-bottom: 10px;
+  }
+
+  .story-tag.trap { background: var(--rose-dim); color: var(--rose); }
+  .story-tag.verified { background: var(--emerald-dim); color: var(--emerald); }
+
+  /* ---------------------------------------------------------- q&a */
+
+  details {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    margin-bottom: 8px;
+    overflow: hidden;
+  }
+
+  details[open] { box-shadow: var(--shadow); }
+
+  summary {
+    cursor: pointer;
+    padding: 13px 18px;
+    font-family: var(--font-display);
+    font-size: 15.5px;
+    font-weight: 600;
+    line-height: 1.4;
+    list-style: none;
+    display: flex;
+    gap: 12px;
+    align-items: baseline;
+    transition: background .12s;
+  }
+
+  summary::-webkit-details-marker { display: none; }
+  summary:hover { background: var(--surface-2); }
+  summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+  summary::before {
+    content: "?";
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--accent);
+    flex-shrink: 0;
+  }
+
+  details[open] summary { border-bottom: 1px solid var(--rule-soft); }
+
+  .answer { padding: 16px 18px 2px 18px; }
+  .answer > :last-child { margin-bottom: 16px; }
+
+  .qa-hint {
+    font-family: var(--font-display);
+    font-size: 13.5px;
+    color: var(--muted);
+    background: var(--surface-2);
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin-bottom: 20px;
+    max-width: var(--measure);
+  }
+
+  /* ---------------------------------------------------------- callout */
+
+  .callout {
+    border-radius: 8px;
+    padding: 15px 18px;
+    margin: 0 0 20px;
+    font-size: 15.5px;
+    max-width: var(--measure);
+    border: 1px solid var(--rule);
+  }
+
+  .callout p:last-child { margin-bottom: 0; }
+  .callout-label {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    display: block;
+    margin-bottom: 6px;
+  }
+
+  .callout.honest { background: var(--rose-dim); border-color: transparent; }
+  .callout.honest .callout-label { color: var(--rose); }
+  .callout.key { background: var(--accent-dim); border-color: transparent; }
+  .callout.key .callout-label { color: var(--accent); }
+
+  /* ---------------------------------------------------------- pitch */
+
+  .pitch {
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    background: var(--surface);
+    padding: 18px 20px;
+    margin-bottom: 16px;
+    box-shadow: var(--shadow);
+  }
+
+  .pitch-dur {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--accent);
+    display: block;
+    margin-bottom: 8px;
+  }
+
+  .pitch p:last-child { margin-bottom: 0; }
+
+  /* ---------------------------------------------------------- phase */
+
+  .phase-status {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 4px;
+    background: var(--surface-2);
+    color: var(--muted);
+    margin-left: 10px;
+    vertical-align: 3px;
+    white-space: nowrap;
+  }
+
+  .phase-status.done { background: var(--emerald-dim); color: var(--emerald); }
+
+  .stack-note {
+    font-family: var(--font-display);
+    font-size: 14px;
+    color: var(--muted);
+    margin-top: -6px;
+  }
+
+  @media (max-width: 900px) {
+    .shell { grid-template-columns: minmax(0, 1fr); gap: 0; padding: 0 20px; }
+    .toc {
+      position: static;
+      max-height: none;
+      padding: 28px 0 20px;
+      border-bottom: 1px solid var(--rule);
+    }
+    .toc ol { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+    main { padding-top: 28px; }
+    body { font-size: 16.5px; }
+    .dl-grid { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+    .dl-grid dt { padding-top: 10px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+
+<div class="shell">
+
+<nav class="toc">
+  <div class="toc-brand">CodeQA Deep Dive</div>
+  <div class="toc-sub">Interview reference · updated through Phase&nbsp;1</div>
+  <ol>
+    <li><a href="#pitch"><span class="toc-num">01</span><span>Explaining it</span></a></li>
+    <li><a href="#problem"><span class="toc-num">02</span><span>Problem &amp; thesis</span></a></li>
+    <li><a href="#architecture"><span class="toc-num">03</span><span>Architecture</span></a></li>
+    <li><a href="#stack"><span class="toc-num">04</span><span>Stack &amp; versions</span></a></li>
+    <li><a href="#decisions"><span class="toc-num">05</span><span>Design decisions</span></a></li>
+    <li><a href="#phases"><span class="toc-num">06</span><span>Phase log</span></a></li>
+    <li><a href="#stories"><span class="toc-num">07</span><span>War stories</span></a></li>
+    <li><a href="#qa"><span class="toc-num">08</span><span>Question bank</span></a></li>
+    <li><a href="#limits"><span class="toc-num">09</span><span>Known limits</span></a></li>
+    <li><a href="#glossary"><span class="toc-num">10</span><span>Glossary</span></a></li>
+  </ol>
+</nav>
+
+<main>
+
+<header class="masthead">
+  <div class="eyebrow">Project reference</div>
+  <h1>Multi-agent RAG over source code</h1>
+  <p class="standfirst">
+    Everything behind CodeQA — what it does, every decision and the alternatives
+    rejected, the problems hit while building it, and the answers to the
+    questions those decisions invite.
+  </p>
+</header>
+
+<!-- ============================================================ 01 -->
+<section id="pitch">
+  <h2>Explaining it</h2>
+  <p class="sec-note">Three lengths. Interviews ask for all three, usually in this order.</p>
+
+  <div class="pitch">
+    <span class="pitch-dur">30 seconds</span>
+    <p>
+      It answers questions about unfamiliar codebases — "how does auth work
+      here", "what happens between the route handler and the database". Generic
+      RAG chunks source at arbitrary character boundaries and splits functions
+      mid-body. This parses with tree-sitter and chunks at function and class
+      boundaries, so every retrieved unit is syntactically complete. The part I
+      care about: it also extracts the call graph, so when it retrieves a
+      function it pulls in that function's callers and callees. That's what
+      lets it explain a flow instead of a fragment.
+    </p>
+  </div>
+
+  <div class="pitch">
+    <span class="pitch-dur">Two minutes</span>
+    <p>
+      Four layers. <strong>Indexing</strong> parses a repo with tree-sitter,
+      chunks by function/class, extracts caller→callee edges, embeds, and writes
+      to Postgres with pgvector. <strong>Retrieval</strong> is hybrid — dense
+      vector search fused with Postgres full-text and an exact symbol index via
+      Reciprocal Rank Fusion — then expands along the call graph.
+      <strong>Reasoning</strong> is a LangGraph state machine: locate → trace →
+      synthesize, where trace walks a cyclic call graph with bounded depth.
+      <strong>API</strong> is FastAPI with SSE streaming, API-key auth, Redis
+      rate limiting, and OpenTelemetry spans per stage.
+    </p>
+    <p>
+      The piece I'd point at is the eval harness. The whole premise is that
+      call-graph expansion improves retrieval, so there's a labeled question set
+      and a runner that measures precision@k for naive vs hybrid vs +graph. I
+      built the naive baseline first specifically so there was something to
+      measure against, and I never deleted it.
+    </p>
+  </div>
+
+  <div class="pitch">
+    <span class="pitch-dur">Five minutes — add the decisions</span>
+    <p>
+      Then walk the decisions in section 05, and land on one war story from
+      section 07. The HNSW partitioning one is the strongest: it's a real bug,
+      it was found by measurement rather than reasoning, the obvious fix didn't
+      work, and the eventual fix made a whole class of bugs impossible instead
+      of less likely.
+    </p>
+  </div>
+</section>
+
+<!-- ============================================================ 02 -->
+<section id="problem">
+  <h2>Problem &amp; thesis</h2>
+  <p class="sec-note">What's actually hard here, stated so the design reads as a consequence of it.</p>
+
+  <p>
+    Engineers joining an unfamiliar codebase spend disproportionate time on
+    structural questions. Answering them requires more than finding a relevant
+    function — it requires knowing how that function connects to the rest of the
+    system: who calls it, what it calls, where it sits in an end-to-end flow.
+  </p>
+
+  <p>General-purpose "chat with your documents" RAG handles this badly for code, in two specific ways:</p>
+
+  <ul>
+    <li>
+      <strong>Chunking destroys syntax.</strong> Fixed character windows split
+      functions mid-body. A chunk containing the back half of one function and
+      the front half of the next is not a meaningful retrieval unit, and an
+      embedding of it means very little.
+    </li>
+    <li>
+      <strong>Retrieval is call-graph blind.</strong> Even a perfectly retrieved
+      function is an isolated snippet. The model can describe what it does, but
+      not how it participates in a flow — which is precisely the information a
+      new engineer needs.
+    </li>
+  </ul>
+
+  <div class="callout key">
+    <span class="callout-label">The thesis</span>
+    <p>
+      Retrieving a function <em>plus its direct callers and callees</em> produces
+      measurably better retrieval than semantic similarity alone. Everything
+      distinctive about this project follows from that claim — which is why the
+      eval harness that tests it was moved ahead of the agent layer.
+    </p>
+  </div>
+
+  <p>
+    Flask is the anchor repo for evaluation because it has genuine multi-hop
+    request flows: <code>route</code> → <code>add_url_rule</code> →
+    <code>full_dispatch_request</code> → <code>dispatch_request</code> → view.
+    "What happens between a request arriving and my view function running" is
+    exactly the question naive RAG fails and call-graph expansion should win.
+    Flatter libraries like <code>requests</code> were rejected as anchors for
+    having too few multi-hop chains to demonstrate anything.
+  </p>
+</section>
+
+<!-- ============================================================ 03 -->
+<section id="architecture">
+  <h2>Architecture</h2>
+  <p class="sec-note">Four layers, one database.</p>
+
+  <h3>Indexing</h3>
+  <p>
+    Enumerate source files → parse with tree-sitter → emit function/class chunks
+    with metadata → extract call edges → embed → upsert into Postgres. Runs as a
+    background job, not in a request: indexing takes minutes.
+  </p>
+
+  <h3>Storage</h3>
+  <p>
+    One Postgres instance holds vectors (pgvector), chunk metadata, the symbol
+    index, and the call graph. Redis holds the query cache and rate-limit
+    buckets. Using one database rather than a dedicated vector store means
+    hybrid retrieval is a join instead of a client-side merge across two systems
+    with independent failure modes.
+  </p>
+
+  <h3>Retrieval</h3>
+  <p>
+    Three strategies behind one interface, selected by config:
+    <code>naive</code> (dense only), <code>hybrid</code> (dense + full-text +
+    symbol, fused by RRF), and <code>hybrid+graph</code> (hybrid, then call-graph
+    expansion). All three stay runnable permanently so the comparison is
+    reproducible at any commit.
+  </p>
+
+  <h3>Reasoning</h3>
+  <p>
+    A LangGraph state graph. <strong>Locate</strong> interprets the question and
+    issues retrieval queries. <strong>Trace</strong> walks the call graph around
+    the located chunks with bounded depth and cycle detection.
+    <strong>Synthesize</strong> streams a grounded answer with
+    <code>file:line</code> citations. A conditional edge routes back from trace
+    to locate when context is insufficient, bounded by an attempt counter.
+  </p>
+
+  <h3>Request path</h3>
+  <pre><code>POST /v1/query
+  → auth + per-key rate limit (Redis token bucket)
+  → cache check (normalized question + repo scope)
+  → locate    : hybrid retrieval, repo-scoped
+  → trace     : recursive CTE over call_edges, bounded depth
+  → synthesize: SSE token stream, citations verified before emit
+  → OTel spans exported per stage; result cached</code></pre>
+</section>
+
+<!-- ============================================================ 04 -->
+<section id="stack">
+  <h2>Stack &amp; versions</h2>
+  <p class="sec-note">Every version below was verified by installing it, not recalled.</p>
+
+  <div class="scroll-x">
+  <table>
+    <thead>
+      <tr><th>Layer</th><th>Choice</th><th>Version</th><th>Why this one</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Language</td><td>Python</td><td>3.14.2</td><td>The parsing, embedding and agent ecosystem is Python-first</td></tr>
+      <tr><td>Parsing</td><td>tree-sitter</td><td>0.26.0</td><td>Language-aware CST parsing; grammars ship reusable tag queries</td></tr>
+      <tr><td>Database</td><td>Postgres + pgvector</td><td>17.11 / ext 0.8.6</td><td>Vectors, metadata, symbols and graph in one system</td></tr>
+      <tr><td>DB driver</td><td>psycopg</td><td>3.3.4</td><td>No ORM — the interesting queries are hand-written</td></tr>
+      <tr><td>Orchestration</td><td>LangGraph</td><td>1.2.11</td><td>Explicit nodes, edges and state; no auto-chaining</td></tr>
+      <tr><td>LLM abstraction</td><td>LiteLLM</td><td>1.96.2</td><td>Provider-agnostic; keeps the provider choice deferrable</td></tr>
+      <tr><td>API</td><td>FastAPI</td><td>0.141.1</td><td>Async-native, needed for streaming + concurrent LLM calls</td></tr>
+      <tr><td>Local embeddings</td><td>sentence-transformers</td><td>5.7.0 / torch 2.13</td><td>Reproducible and free for CI and evals</td></tr>
+      <tr><td>Graph traversal</td><td>Postgres recursive CTE</td><td>—</td><td>networkx demoted to test oracle (see decisions)</td></tr>
+      <tr><td>Cache / limits</td><td>Redis</td><td>—</td><td>Query cache and per-key token buckets</td></tr>
+      <tr><td>Observability</td><td>OTel + Jaeger + structlog</td><td>—</td><td>Per-stage spans, JSON logs keyed by trace ID</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p class="stack-note">
+    Python 3.14 was not assumed — the full dependency set was installed into a
+    throwaway venv before anything was pinned, because torch and the tree-sitter
+    grammar wheels were the plausible holdouts on a new interpreter. Both were
+    fine, so no downgrade to 3.12 was needed.
+  </p>
+</section>
+
+<!-- ============================================================ 05 -->
+<section id="decisions">
+  <h2>Design decisions</h2>
+  <p class="sec-note">Each one names what was given up. A decision without a stated cost reads as an untested opinion.</p>
+
+  <div class="decision">
+    <h3>Multi-repo, not multi-tenant</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>The design doc scoped "one codebase at a time" and explicitly cut multi-tenancy. The requirement became "work on any repo".</dd>
+      <dt>Decision</dt>
+      <dd>Separate the two ideas. <strong>Multi-repo indexing is in</strong> — a repo registry, <code>repo_id</code> on every chunk, symbol and edge. <strong>Multi-tenancy stays cut</strong> — no per-org isolation, no auth boundaries between users.</dd>
+      <dt class="k-give">Gave up</dt>
+      <dd>Any story about tenant isolation or per-customer data boundaries. That's a different project.</dd>
+      <dt class="k-ask">If asked</dt>
+      <dd>"Those are different requirements that sound similar. Indexing many repos is a data-modeling problem — scope every row by repo. Multi-tenancy is a security-boundary problem. I built the first and deliberately didn't claim the second."</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>Tree-sitter tag queries instead of per-language parsers</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>Supporting "all languages" appears to mean writing an AST walker per language — the thing that makes multi-language support look impossible for one person.</dd>
+      <dt>Options</dt>
+      <dd>Hand-write extraction per language; or restrict to Python; or find a uniform mechanism.</dd>
+      <dt>Decision</dt>
+      <dd>Tree-sitter grammars ship <code>queries/tags.scm</code> declaring captures like <code>@definition.function</code>, <code>@definition.class</code> and <code>@reference.call</code> — the same mechanism GitHub uses for cross-language code navigation. One query-driven code path replaces N parsers. Adding a language ships a <code>.scm</code> file, not code.</dd>
+      <dt>Verified</dt>
+      <dd>Checked across nine grammars before designing around it. Definitions + calls: python, javascript, go, java, rust, ruby, php. Definitions only: typescript, cpp. No queries at all: c_sharp.</dd>
+      <dt class="k-give">Gave up</dt>
+      <dd>Precision. A hand-written walker with type information would resolve calls better. Tag queries are syntactic — they see <code>foo()</code>, not what <code>foo</code> resolves to.</dd>
+      <dt class="k-ask">If asked</dt>
+      <dd>"Languages carry a declared capability tier rather than silently degrading. Tier 1 gets real call edges; tier 2 gets chunks and approximate edges; tier 3 gets chunks and symbols only. The system reports which tier it used, so nobody mistakes an approximation for analysis."</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>Postgres recursive CTE for traversal, networkx as test oracle</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>The design doc specified networkx for the call graph.</dd>
+      <dt>Problem</dt>
+      <dd>networkx is in-memory. The edges already live in Postgres, so every query would either load a repo's whole graph or maintain a second persistence format — worse with many repos.</dd>
+      <dt>Decision</dt>
+      <dd>Traversal behind an interface with two implementations. Production is <code>WITH RECURSIVE … CYCLE</code> (Postgres 14+), which gives bounded depth and <em>built-in</em> cycle detection, repo-scoped, in one query with no memory load. networkx becomes the reference implementation used only in tests.</dd>
+      <dt>Bonus</dt>
+      <dd>Differential testing: assert both implementations produce identical traversals on fixtures. Two independent implementations agreeing is far stronger evidence than one implementation passing hand-written expectations.</dd>
+      <dt class="k-give">Gave up</dt>
+      <dd>Graph algorithms beyond traversal. Centrality or community detection would be painful in SQL — but the system doesn't need them.</dd>
+      <dt class="k-ask">If asked</dt>
+      <dd>"Why not a graph database? It would mean a second system to run, sync and fail independently, to serve bounded-depth traversal that Postgres does natively. The edges have to live somewhere transactional next to the chunks anyway."</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>Evals moved ahead of the agent layer</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>The original plan put the eval harness at days 13–15, after agents and production features.</dd>
+      <dt>Decision</dt>
+      <dd>Move it to immediately after retrieval lands. "Call-graph expansion improves retrieval" is a <em>retrieval</em> claim — testable with no agents involved.</dd>
+      <dt>Reason</dt>
+      <dd>If the hypothesis is weak, that is the single most important finding the project can produce. The original schedule discovers it with three days left. It also means every later phase is guarded by a regression harness, which is what "CI for answer quality" actually requires.</dd>
+      <dt class="k-give">Gave up</dt>
+      <dd>An impressive demo earlier. The agent pipeline is the flashy part and it now comes later.</dd>
+      <dt class="k-ask">If asked</dt>
+      <dd>"I sequenced it so the riskiest assumption gets tested first. The agents are engineering I'm confident I can finish; whether the retrieval idea works is the actual unknown."</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>A real conditional edge in the agent graph</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>The design doc justified LangGraph with "native support for cycles" — but locate → trace → synthesize is a straight line. The cycles were in the <em>call</em> graph, not the <em>agent</em> graph.</dd>
+      <dt>Problem</dt>
+      <dd>That's a defensibility hole. The obvious follow-up — "so why not three function calls?" — had no good answer.</dd>
+      <dt>Decision</dt>
+      <dd>Give the agent graph a genuine cycle: if trace finds insufficient context, route back to locate to re-query with refined terms, bounded by an attempt counter in state.</dd>
+      <dt class="k-give">Gave up</dt>
+      <dd>Latency in the retry path, and a new non-termination risk that the attempt counter has to bound.</dd>
+      <dt class="k-ask">If asked</dt>
+      <dd>"Honestly, for a purely linear pipeline LangGraph would be overkill — three function calls would do. It earns its place because of the retry edge, which needs conditional routing and shared state. I'd rather state that than pretend the linear version justified the dependency."</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>Reciprocal Rank Fusion for hybrid retrieval</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>The doc said results are "merged and reranked" without specifying a method.</dd>
+      <dt>Problem</dt>
+      <dd>Cosine similarity and full-text <code>ts_rank</code> are on incomparable scales. Summing or weighting them requires tuning constants with no principled basis.</dd>
+      <dt>Decision</dt>
+      <dd>RRF: score each document by <code>Σ 1/(k + rank)</code> across result lists. It consumes <em>ranks</em>, not scores, so scale mismatch stops mattering. Roughly ten lines, no model, no added latency.</dd>
+      <dt class="k-give">Gave up</dt>
+      <dd>Some ceiling. A cross-encoder reranker would likely do better — so it becomes a <em>measured</em> upgrade in the eval harness rather than an unexamined default.</dd>
+      <dt class="k-ask">If asked</dt>
+      <dd>"Dense retrieval is semantically strong and lexically weak. Identifiers need exact matching — ask where <code>dispatch_request</code> is defined and an embedding returns things that <em>feel</em> like request dispatching. That's the argument for hybrid on code specifically."</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>Local <em>and</em> hosted embeddings behind one interface</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>Provider undecided; deployment target is a hosted backend.</dd>
+      <dt>Tension</dt>
+      <dd>Local models mean torch — roughly 2GB in the image plus inference RAM, which a small hosted instance doesn't have. Hosted APIs mean rate limits, which make bulk indexing slow and eval runs non-reproducible.</dd>
+      <dt>Decision</dt>
+      <dd>Both, behind one interface. Local for dev, CI and evals; hosted for the deployed image. The interface was needed anyway to carry model name and dimension.</dd>
+      <dt class="k-ask">If asked</dt>
+      <dd>"Embedding provider is chosen by indexing throughput, not answer quality. A free tier with per-minute caps can't embed a few thousand chunks reproducibly, and irreproducible eval runs are worse than slightly worse embeddings."</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>No ORM</h3>
+    <dl class="dl-grid">
+      <dt>Decision</dt>
+      <dd>Raw psycopg and plain numbered SQL migrations.</dd>
+      <dt>Reason</dt>
+      <dd>The interesting queries — HNSW vector search, RRF fusion, recursive CTE traversal, partition management — are all things an ORM obscures rather than helps. Alembic is heavy when there's no ORM to autogenerate from.</dd>
+      <dt class="k-give">Gave up</dt>
+      <dd>Autogenerated migrations and typed row mapping. Both are written by hand instead.</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>A job boundary the design doc lacked</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>Indexing an arbitrary repo takes minutes; an HTTP request can't hold it.</dd>
+      <dt>Decision</dt>
+      <dd><code>POST /v1/repos</code> returns a job id; a status endpoint reports progress; a worker polls the <code>index_jobs</code> table with heartbeats so a dead worker's job is reclaimed rather than stuck in <code>running</code> forever.</dd>
+      <dt class="k-give">Gave up</dt>
+      <dd>Simplicity. Deliberately <em>not</em> Celery — a Postgres job table plus a polling loop is about fifty lines and adds no broker to operate.</dd>
+    </dl>
+  </div>
+</section>
+
+<!-- ============================================================ 06 -->
+<section id="phases">
+  <h2>Phase log</h2>
+  <p class="sec-note">Numbered because the order is real — each phase depends on the one before it.</p>
+
+  <h3>Phase 0 — Scaffold and configuration <span class="phase-status done">Done</span></h3>
+  <p>
+    Package layout, typed <code>pydantic-settings</code> config, Docker Compose
+    for Postgres/pgvector, Redis and Jaeger, and a CLI wiring config into the
+    migration runner.
+  </p>
+  <p>
+    Two details worth being able to defend. Config is a validated object rather
+    than scattered <code>os.environ.get</code> calls because
+    <code>embedding_dim</code> is interpolated into DDL — a string that looks
+    like an int would produce a schema nobody intended — and
+    <code>retrieval_strategy</code> is a closed set, so a typo fails at startup
+    instead of silently falling back to a default and quietly invalidating an
+    eval run. And the runtime container omits the local-embeddings extra
+    entirely, keeping roughly 2GB of torch out of the deployed image while CI
+    and evals still get reproducible local embeddings.
+  </p>
+
+  <h3>Phase 1 — Schema and migrations <span class="phase-status done">Done</span></h3>
+  <p>
+    Seven tables — <code>repos</code>, <code>files</code>, <code>chunks</code>,
+    <code>symbols</code>, <code>call_edges</code>, <code>index_jobs</code>,
+    <code>api_keys</code> — plus a forward-only migration runner.
+  </p>
+
+  <h4>What the schema encodes</h4>
+  <ul>
+    <li><strong><code>repo_id</code> on every retrievable row</strong>, denormalized deliberately. It could be reached by joining through <code>files</code>, but it belongs in the <code>WHERE</code> clause of every query directly, and the recursive CTE would otherwise re-join at every recursion level.</li>
+    <li><strong><code>chunks</code> partitioned by <code>repo_id</code></strong> — a correctness fix, not an optimization. See the first war story.</li>
+    <li><strong>Composite foreign keys</strong> into <code>chunks (repo_id, id)</code>, so a cross-repo edge is a constraint violation rather than a silent quality bug.</li>
+    <li><strong><code>last_indexed_sha</code> from day one</strong>, because incremental re-indexing keys off it and backfilling state you no longer have is impossible.</li>
+    <li><strong><code>files.blob_sha</code></strong>, so an incremental run skips files git reports as touched but whose content is unchanged — reverted edits, formatter rewrites.</li>
+    <li><strong>A generated <code>tsvector</code> column</strong> beside the vector, maintained by Postgres so it cannot drift from <code>content</code>.</li>
+    <li><strong><code>edge_resolution</code></strong> — <code>exact</code> / <code>approximate</code> / <code>unresolved</code> — plus the raw callee name, so approximations stay auditable and are never rendered as certain call paths.</li>
+    <li><strong>One live index job per repo</strong>, via a partial unique index on <code>status IN ('queued','running')</code>. Two concurrent indexers would interleave upserts and leave a repo half-indexed behind a <code>last_indexed_sha</code> claiming otherwise.</li>
+  </ul>
+
+  <h4>What the migration runner does beyond running files</h4>
+  <ul>
+    <li><strong>Drift detection.</strong> Each applied migration's sha256 is recorded; editing a file after it applied is a hard error. Prevents the failure where an edit works on a fresh machine and production never applies it.</li>
+    <li><strong>Checksums the raw template, before substitution.</strong> Substituted values come from config and legitimately differ between environments; the file must not. Hashing rendered SQL would flag every environment difference as tampering.</li>
+    <li><strong>Advisory lock.</strong> Concurrent boots serialize instead of racing on <code>CREATE TABLE</code> — the normal case when several containers start at once.</li>
+    <li><strong>Transactional DDL.</strong> Postgres lets DDL participate in transactions, so a migration failing partway leaves no partial schema, and the <code>schema_migrations</code> insert is in the same transaction as the change it records.</li>
+    <li><strong>Dimension verification.</strong> After migrating, read the deployed vector dimension via <code>format_type</code> and refuse to boot on a mismatch with config.</li>
+  </ul>
+
+  <p><strong>Verification:</strong> 9 integration tests green against Postgres 17.11 / pgvector 0.8.6 — idempotence, dry run, drift, database-ahead-of-checkout, dimension mismatch, atomicity, and three discovery-validation cases.</p>
+
+  <div class="callout key">
+    <span class="callout-label">Why integration tests, not mocks</span>
+    <p>
+      Idempotence, drift, atomicity and dimension enforcement are properties of
+      the runner's <em>interaction with database state</em>. Mocking psycopg
+      would assert that the mock behaves like the code — always true, proves
+      nothing. The same reasoning produced the measured HNSW finding below.
+    </p>
+  </div>
+</section>
+
+<!-- ============================================================ 07 -->
+<section id="stories">
+  <h2>War stories</h2>
+  <p class="sec-note">Each in a fixed shape — symptom, investigation, root cause, fix, lesson — because that's the shape the question arrives in.</p>
+
+  <div class="story">
+    <span class="story-tag verified">Measured, not reasoned</span>
+    <h3>A vector search that returned nothing while the data was right there</h3>
+    <dl class="dl-grid">
+      <dt>Symptom</dt>
+      <dd>A repo-scoped nearest-neighbour query returned <strong>zero rows</strong> despite 500 valid matches in the table. No error, no warning — a successful query returning an empty set.</dd>
+      <dt>Setup</dt>
+      <dd>30,500 vectors across three repos; the target repo held only 500 of them, and they were the <em>farthest</em> from the query. Asked for the 10 nearest chunks in that repo.</dd>
+      <dt>Root cause</dt>
+      <dd>HNSW is an <em>approximate</em> index. Postgres searches the index first and applies <code>WHERE repo_id = N</code> <strong>afterwards</strong>. The nearest neighbours all belonged to other repos, so they were found, then filtered away, leaving nothing. Classic ANN filtered-search failure.</dd>
+      <dt>Measured</dt>
+      <dd>
+        <div class="scroll-x">
+        <table>
+          <thead><tr><th>Configuration</th><th>Rows returned</th></tr></thead>
+          <tbody>
+            <tr><td>Unpartitioned, <code>ef_search=40</code> (default)</td><td class="num fail">0</td></tr>
+            <tr><td>Unpartitioned, <code>iterative_scan=relaxed_order</code></td><td class="num fail">0</td></tr>
+            <tr><td>Unpartitioned, + <code>scan_mem_multiplier=4</code></td><td class="num">10</td></tr>
+            <tr><td>Unpartitioned, <code>ef_search=1000</code></td><td class="num">10</td></tr>
+            <tr><td><strong>Partitioned by <code>repo_id</code>, defaults</strong></td><td class="num win">10</td></tr>
+          </tbody>
+        </table>
+        </div>
+      </dd>
+      <dt>Fix</dt>
+      <dd>Partition <code>chunks</code> <code>BY LIST (repo_id)</code>. Partition pruning means the scanned partition contains <em>only</em> matching rows — there is no post-filtering step, so there is no recall to lose. Correct at default settings.</dd>
+      <dt>Lesson</dt>
+      <dd>Every other row in that table is <em>tuning</em> — spend more search effort until the filter probably finds enough. Partitioning removes the failure mode instead of making it less likely. Prefer fixes that change what's possible over fixes that change what's probable.</dd>
+    </dl>
+  </div>
+
+  <div class="story">
+    <span class="story-tag">The obvious fix didn't work</span>
+    <h3>pgvector's purpose-built feature for this didn't fix it</h3>
+    <dl class="dl-grid">
+      <dt>Expectation</dt>
+      <dd><code>hnsw.iterative_scan</code>, added in pgvector 0.8, exists precisely for filtered search — it keeps fetching candidates until enough rows survive the filter.</dd>
+      <dt>Symptom</dt>
+      <dd>Still zero rows. Raising <code>hnsw.max_scan_tuples</code> from 20,000 to 40,000 — past the full 30,500-row table — changed nothing.</dd>
+      <dt>Investigation</dt>
+      <dd>Swept both budget knobs independently. <code>max_scan_tuples</code> alone never helped; adding <code>scan_mem_multiplier=4</code> immediately returned all 10.</dd>
+      <dt>Root cause</dt>
+      <dd><code>relaxed_order</code> buffers candidate tuples in memory bounded by <code>work_mem × scan_mem_multiplier</code>. The buffer filled long before the scan reached the target repo's rows. Memory was the binding constraint, not the tuple budget — so the knob that looked relevant was the wrong one.</dd>
+      <dt>Lesson</dt>
+      <dd>Two knobs that both look like "scan further" can bind differently, and the documentation-obvious one wasn't it. This is the concrete reason the project verifies behaviour against a real database instead of reasoning from API names.</dd>
+    </dl>
+  </div>
+
+  <div class="story">
+    <span class="story-tag trap">The database suggested the wrong fix</span>
+    <h3>A hint that would have silently disarmed a database-wide guarantee</h3>
+    <dl class="dl-grid">
+      <dt>Symptom</dt>
+      <dd>After adding composite foreign keys, dropping a repo's partition failed: <code>cannot drop table chunks_repo_2 because other objects depend on it</code>. Postgres helpfully suggested <code>DROP … CASCADE</code>.</dd>
+      <dt>Why the hint is a trap</dt>
+      <dd>Those FK constraints are defined on the <em>parent</em> tables — <code>symbols</code> and <code>call_edges</code> — and shared by every repo. <code>CASCADE</code> drops the constraints themselves. Deleting one repo would have quietly removed the cross-repo guarantee for the entire database, and nothing would have failed at the time.</dd>
+      <dt>Fix</dt>
+      <dd>Delete the dependent rows for that repo, then <code>DETACH PARTITION</code>, then <code>DROP TABLE</code>. Verified that Postgres validates the FKs on detach and refuses to strand rows — tested by trying it with dependents still present and confirming it errors.</dd>
+      <dt>Lesson</dt>
+      <dd>An error hint optimizes for making the current statement succeed, not for preserving your invariants. Two fixes that were individually correct — partitioning and composite FKs — interacted in a way neither anticipated, and only running the teardown path revealed it.</dd>
+    </dl>
+  </div>
+
+  <div class="story">
+    <span class="story-tag">Subtle by design</span>
+    <h3>Checksum the template or the rendered SQL?</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>Migrations contain <code>${EMBEDDING_DIM}</code>, substituted from config, because pgvector needs a fixed dimension at DDL time while the embedding model is configurable.</dd>
+      <dt>The question</dt>
+      <dd>Drift detection hashes migration files. Hash the raw template, or the SQL actually executed?</dd>
+      <dt>Decision</dt>
+      <dd>The raw template. Substituted values legitimately differ between environments — dev on 384, prod on 768. Hashing rendered SQL would flag every environment difference as tampering, and an alarm that fires on normal operation is an alarm you learn to ignore.</dd>
+      <dt>Consequence</dt>
+      <dd>The dimension is then unguarded by the checksum, so it needs its own check: read the deployed column type via <code>format_type</code> and refuse to boot on mismatch. Vectors from different models still produce well-formed similarity scores — they're just meaningless, and every downstream eval number inherits the corruption.</dd>
+      <dt>Lesson</dt>
+      <dd>"The file is immutable, the config may vary" is the actual invariant. Getting the checksum boundary wrong would have produced either false alarms or a silent gap.</dd>
+    </dl>
+  </div>
+</section>
+
+<!-- ============================================================ 08 -->
+<section id="qa">
+  <h2>Question bank</h2>
+  <p class="sec-note">Answers are collapsed on purpose.</p>
+
+  <div class="qa-hint">
+    Try answering out loud before opening each one. Recognizing an answer feels
+    like knowing it and isn't.
+  </div>
+
+  <h3>On retrieval</h3>
+
+  <details>
+    <summary>Why Postgres with pgvector instead of a dedicated vector database?</summary>
+    <div class="answer">
+      <p>
+        Hybrid retrieval needs dense vectors, full-text ranking and an exact
+        symbol index combined. In one database that's a join. Across two systems
+        it's a client-side merge with two sets of credentials, two failure modes
+        and a consistency problem when indexing writes to one and not the other.
+      </p>
+      <p>
+        The call graph also has to live somewhere transactional next to the
+        chunks, and the traversal is a recursive CTE over those edges. Splitting
+        vectors out would leave the majority of the interesting queries in
+        Postgres anyway. At this scale a dedicated vector DB buys throughput I
+        don't need at the cost of an integration I'd have to maintain.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What does HNSW actually give up compared to exact search?</summary>
+    <div class="answer">
+      <p>
+        Recall. Exact search compares the query against every vector — perfect
+        results, cost linear in table size. HNSW builds a multi-layer navigable
+        graph and walks it greedily, which is dramatically faster and will
+        sometimes miss a true top-k neighbour. <code>m</code> controls graph
+        connectivity; <code>ef_construction</code> controls build-time search
+        width; <code>ef_search</code> controls query-time width. Higher means
+        better recall, slower builds, more memory.
+      </p>
+      <p>
+        The failure that actually bit me wasn't ordinary recall loss — it was the
+        interaction with filtering, where approximate search plus a post-applied
+        <code>WHERE</code> can return nothing at all.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why is hybrid retrieval worth the complexity over dense-only?</summary>
+    <div class="answer">
+      <p>
+        Because code is full of identifiers, and identifiers are lexical rather
+        than semantic. Ask "where is <code>dispatch_request</code> defined" and a
+        pure embedding search returns functions that <em>feel</em> like request
+        dispatching — semantically close, exactly wrong. Full-text search and an
+        exact symbol index catch what embeddings blur, and RRF fuses the ranked
+        lists without needing their scores to be comparable.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How does RRF work, and why not just weight the scores?</summary>
+    <div class="answer">
+      <p>
+        RRF scores each document as <code>Σ 1/(k + rank)</code> summed across
+        result lists, where <code>k</code> is a damping constant (60 is
+        conventional). It consumes <em>ranks</em>, not scores.
+      </p>
+      <p>
+        That's the point. Cosine similarity lives roughly in [-1, 1]; Postgres
+        <code>ts_rank</code> has no fixed range. Weighting them requires
+        constants with no principled basis that you'd retune whenever either
+        component changed. Ranks are comparable by construction.
+      </p>
+    </div>
+  </details>
+
+  <h3>On the call graph</h3>
+
+  <details>
+    <summary>What happens if a query hits a function that calls into a cycle?</summary>
+    <div class="answer">
+      <p>
+        Traversal is bounded on two axes: a maximum depth, and cycle detection.
+        Postgres has a <code>CYCLE</code> clause on recursive CTEs that maintains
+        the visited path and marks a row when it revisits a node, so traversal
+        terminates on cyclic graphs natively rather than by hand-rolled
+        bookkeeping.
+      </p>
+      <p>
+        It's tested against a deliberately cyclic fixture, and against a
+        networkx BFS implementation that must produce identical output —
+        differential testing rather than trusting one implementation.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How accurate is your call graph, really?</summary>
+    <div class="answer">
+      <p>
+        It's syntactic, and I'd rather say that plainly than oversell it. Tag
+        queries see a call site named <code>foo</code>; resolving <em>which</em>
+        <code>foo</code> is genuinely hard in a dynamic language. There's no type
+        inference and no dynamic-dispatch resolution, so
+        <code>self.handler()</code> often can't be pinned to one target.
+      </p>
+      <p>
+        So every edge carries a resolution class — <code>exact</code>,
+        <code>approximate</code>, or <code>unresolved</code> — and the raw callee
+        name is kept alongside it. Approximate edges are never presented as
+        certain call paths. The honest claim is "high-value approximation with
+        stated limits", not "static analysis".
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why not a graph database for the call graph?</summary>
+    <div class="answer">
+      <p>
+        The workload is bounded-depth traversal from a small seed set — three or
+        four hops, not arbitrary pattern matching. Postgres does that in a
+        recursive CTE with built-in cycle detection. A graph database would be a
+        second system to run, sync and fail independently, and the edges still
+        need to sit transactionally beside the chunks they reference.
+      </p>
+      <p>
+        If the workload became global graph analytics — centrality, community
+        detection — that calculus changes. It hasn't.
+      </p>
+    </div>
+  </details>
+
+  <h3>On the agents</h3>
+
+  <details>
+    <summary>Why LangGraph? Isn't this just three function calls?</summary>
+    <div class="answer">
+      <p>
+        For a purely linear locate → trace → synthesize pipeline, that criticism
+        is fair and I'd concede it. What earns the dependency is the conditional
+        edge: when trace finds insufficient context, the graph routes back to
+        locate to re-query with refined terms, bounded by an attempt counter in
+        shared state.
+      </p>
+      <p>
+        That needs conditional routing over accumulated state, which is exactly
+        what a state graph provides. Worth noting the original design justified
+        LangGraph with "support for cycles" while the cycles were in the
+        <em>call</em> graph, not the agent graph — I caught that conflation and
+        added a real cycle rather than leave the justification hollow.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What stops the model from inventing a citation?</summary>
+    <div class="answer">
+      <p>
+        Grounding is a deterministic function, not a prompt instruction. Every
+        claimed citation is checked: does that chunk exist in the context we
+        actually assembled, and does the claimed line range actually exist in
+        that file? Citations that fail are dropped before rendering, and the
+        check is unit-tested on both accept and reject paths, including a
+        fabricated line range.
+      </p>
+      <p>
+        The limit worth stating precisely: this verifies the <em>citation</em>,
+        not the <em>claim</em>. It proves the cited code exists and was
+        retrieved. It cannot prove the sentence attached to it is a correct
+        description. Faithfulness is measured separately in the eval harness.
+      </p>
+    </div>
+  </details>
+
+  <h3>On engineering judgment</h3>
+
+  <details>
+    <summary>How do you know call-graph expansion actually helps?</summary>
+    <div class="answer">
+      <p>
+        Because it's measured rather than asserted. There's a labeled set of
+        Flask questions with known-correct files and symbols, and a runner
+        reporting precision@k and recall@k for three strategies: naive dense
+        retrieval, hybrid, and hybrid plus graph expansion.
+      </p>
+      <p>
+        The naive baseline was built first specifically so there'd be something
+        to measure against, and it's never deleted — it stays config-selectable
+        permanently, so the comparison is reproducible at any commit. The usual
+        way this fails is refactoring the baseline out of existence and losing
+        the ability to reproduce the claim.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why partition rather than tune ef_search?</summary>
+    <div class="answer">
+      <p>
+        Tuning makes the failure less likely; partitioning makes it impossible.
+        With <code>ef_search=1000</code> the query worked in my test, but that's
+        a number chosen against one data distribution — a repo with a different
+        shape, or more repos, moves the threshold and the failure returns
+        silently.
+      </p>
+      <p>
+        With one partition per repo, <code>WHERE repo_id = N</code> prunes to a
+        single partition where every row already satisfies the filter. There's
+        no post-filtering step, so there's no recall to lose, at default
+        settings, regardless of distribution.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What did partitioning cost you?</summary>
+    <div class="answer">
+      <p>
+        Three things. A partition must be created when a repo is registered, so
+        registration does DDL. The primary key must include the partition key,
+        making it <code>(repo_id, id)</code>, so everything referencing chunks
+        uses composite foreign keys. And foreign keys referencing a partitioned
+        table create one catalog constraint entry <em>per partition</em>, so
+        constraint count grows with repo count — fine at tens to hundreds,
+        worth revisiting beyond that.
+      </p>
+      <p>
+        The composite-FK consequence turned out to be a benefit: a cross-repo
+        edge is now a foreign-key violation. The scoping invariant stopped being
+        something to remember and became something the database enforces.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Your system supports "all languages" — how, realistically?</summary>
+    <div class="answer">
+      <p>
+        Through one query-driven code path, not N parsers. Tree-sitter grammars
+        ship <code>queries/tags.scm</code> declaring
+        <code>@definition.function</code>, <code>@definition.class</code> and
+        <code>@reference.call</code>. The extractor runs those queries, so adding
+        a language ships a <code>.scm</code> file rather than code.
+      </p>
+      <p>
+        Support isn't uniform, and the system declares that rather than hiding
+        it. Tier 1 grammars have both definitions and call references — verified
+        for Python, JavaScript, Go, Java, Rust, Ruby and PHP. TypeScript and C++
+        ship definitions only, so calls are approximated by symbol name. C# ships
+        no tag queries, so it gets chunks and symbols until someone writes them.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Is it safe to index a repository you don't control?</summary>
+    <div class="answer">
+      <p>
+        The core property is that <strong>tree-sitter parses but never
+        executes</strong>. Indexing untrusted code never runs it — no imports, no
+        build step, no evaluation. That's safe by construction rather than by
+        sandboxing.
+      </p>
+      <p>
+        The real exposure is the clone, not the parse: a server fetching a
+        user-supplied URL needs an SSRF guard, <code>--depth 1</code>, a size
+        cap, a clone timeout and a disk quota. Those are the controls on the
+        ingestion path.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What's the weakest part of the system?</summary>
+    <div class="answer">
+      <p>
+        Call resolution. Everything downstream — trace quality, multi-hop
+        answers, the entire differentiating claim — depends on caller/callee
+        edges being right, and they're derived from syntax without type
+        information. In a dynamic language a meaningful fraction of call sites
+        can't be resolved to a single target.
+      </p>
+      <p>
+        That's why edges carry a resolution class, why approximations are never
+        presented as certainties, and why per-stage failure attribution is in the
+        eval harness — so a bad answer can be traced to the stage that caused it
+        rather than blamed on "the LLM".
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How would you scale this to ten thousand repositories?</summary>
+    <div class="answer">
+      <p>
+        The current design would strain in two known places. Partition-per-repo
+        means catalog growth and planning-time cost at that count, so I'd move to
+        hash partitioning with a bounded partition count, accepting some
+        in-partition filtering back — and re-measure the filtered-recall
+        behaviour, since that's exactly the tradeoff being reversed.
+      </p>
+      <p>
+        The second is indexing throughput: one polling worker doesn't scale, so
+        jobs would need claiming via <code>SELECT … FOR UPDATE SKIP LOCKED</code>
+        across multiple workers. The partial unique index on live jobs already
+        keeps one repo from being indexed twice concurrently, so that part holds.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What would you do differently if you started over?</summary>
+    <div class="answer">
+      <p>
+        I'd verify database behaviour before writing schema, not after. The
+        partitioning decision came from measuring a filtered vector search, and
+        that measurement could have happened on day one — instead it revised a
+        schema I'd already written and documented.
+      </p>
+      <p>
+        More generally: the sequencing lesson from moving evals earlier applies
+        to infrastructure too. Test the assumption you'd most regret being wrong
+        about, first.
+      </p>
+    </div>
+  </details>
+</section>
+
+<!-- ============================================================ 09 -->
+<section id="limits">
+  <h2>Known limits</h2>
+  <p class="sec-note">Volunteering these is stronger than being caught by them.</p>
+
+  <ul>
+    <li><strong>Call resolution is syntactic.</strong> No type inference, no dynamic dispatch. Some call sites resolve to nothing or to the wrong target; edges are labelled with confidence accordingly.</li>
+    <li><strong>Not multi-tenant.</strong> Many repos, no isolation boundary between users. Stated as a scope cut, not an oversight.</li>
+    <li><strong>Partition-per-repo has a ceiling.</strong> Catalog constraint entries grow with repo count. Comfortable at tens to hundreds.</li>
+    <li><strong>Grounding verifies citations, not claims.</strong> It proves cited code exists and was retrieved, not that the sentence describing it is correct.</li>
+    <li><strong>English text-search config on source code.</strong> Stemming identifiers with English rules is a compromise; whether <code>simple</code> does better is a measurable question the eval harness can settle.</li>
+    <li><strong>Tier 2 and 3 languages get degraded call graphs</strong> — approximate or absent. Declared per language rather than silently applied.</li>
+    <li><strong>No numbers claimed until measured.</strong> No precision@k or latency figure goes in the README or on a résumé before the harness produces it. A modest measured number is defensible; an impressive invented one collapses on the second question.</li>
+  </ul>
+</section>
+
+<!-- ============================================================ 10 -->
+<section id="glossary">
+  <h2>Glossary</h2>
+  <p class="sec-note">Terms this project uses that an interviewer may ask you to define cold.</p>
+
+  <dl class="dl-grid">
+    <dt>CST</dt>
+    <dd>Concrete syntax tree — tree-sitter's output. Unlike an AST it preserves every token including punctuation and comments, which is what makes exact line spans recoverable.</dd>
+    <dt>Tag query</dt>
+    <dd>An S-expression pattern in <code>tags.scm</code> that captures definitions and references from a parse tree. The uniform mechanism behind multi-language support.</dd>
+    <dt>HNSW</dt>
+    <dd>Hierarchical Navigable Small World — an approximate nearest-neighbour index built as a layered proximity graph, traversed greedily.</dd>
+    <dt>RRF</dt>
+    <dd>Reciprocal Rank Fusion — combines ranked lists by <code>Σ 1/(k + rank)</code>, using positions rather than scores so incomparable scales don't matter.</dd>
+    <dt>Recursive CTE</dt>
+    <dd>A self-referencing SQL common table expression. Postgres 14+ adds a <code>CYCLE</code> clause that tracks visited paths, giving cycle-safe graph traversal in one query.</dd>
+    <dt>tsvector</dt>
+    <dd>Postgres's parsed, normalized full-text representation. Here a generated column, so it can't drift from the content it indexes.</dd>
+    <dt>Partition pruning</dt>
+    <dd>The planner excluding partitions that can't match a predicate. The mechanism that makes repo-scoped vector search exact rather than approximate-then-filtered.</dd>
+    <dt>Token bucket</dt>
+    <dd>Rate-limiting scheme where a bucket refills at a steady rate and each request spends a token. Permits bursts up to bucket size, unlike a fixed window.</dd>
+    <dt>SSE</dt>
+    <dd>Server-Sent Events — one-directional server→client streaming over plain HTTP. Sufficient for token streaming and simpler than WebSockets.</dd>
+    <dt>Precision@k</dt>
+    <dd>Fraction of the top k results that are relevant. Recall@k is the fraction of all relevant items appearing in the top k.</dd>
+  </dl>
+</section>
+
+</main>
+</div>
