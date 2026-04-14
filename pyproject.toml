@@ -7,10 +7,37 @@ requires-python = ">=3.14"
 dependencies = [
     # Parsing. Grammars ship queries/tags.scm, which is what makes
     # multi-language support one code path instead of one parser per language.
-    # Phase 2 evaluates tree-sitter-language-pack as a bulk source of grammars;
-    # until then the individually verified ones are pinned explicitly.
+    #
+    # Evaluated and rejected tree-sitter-language-pack (xberg-io) as a bulk
+    # source of grammars: it downloads compiled native binaries at runtime
+    # (DownloadManager / download_all), from a young, non-canonical publisher.
+    # For a system that parses arbitrary untrusted third-party repositories,
+    # that reintroduces exactly the supply-chain risk "tree-sitter parses but
+    # never executes" is meant to rule out. Grammars are pinned individually
+    # instead -- each compiled into its wheel at build time, no runtime fetch,
+    # published by the tree-sitter org or the grammar's own maintainers.
+    #
+    # Tier 1 (definitions + @reference.call, verified against real tags.scm
+    # content): python, javascript, go, java, rust, ruby, php.
+    # Tier 2 (definitions only; call references added via a bundled override
+    # in languages/queries/): typescript, cpp.
+    # C# ships no tags.scm at all and has no override yet -- tier 3, detected
+    # but not chunked at function granularity. See docs/deep-dive.html.
     "tree-sitter>=0.26",
+    # Version floors are what was actually installed and verified against
+    # (registry.py, tests/unit/test_languages.py) -- not a copy-pasted
+    # round number. They vary because each grammar has its own release
+    # cadence; tree-sitter-c-sharp in particular has not reached 0.25.
     "tree-sitter-python>=0.25",
+    "tree-sitter-javascript>=0.25",
+    "tree-sitter-typescript>=0.23",
+    "tree-sitter-go>=0.25",
+    "tree-sitter-java>=0.23",
+    "tree-sitter-rust>=0.24",
+    "tree-sitter-ruby>=0.23",
+    "tree-sitter-php>=0.24",
+    "tree-sitter-cpp>=0.23",
+    "tree-sitter-c-sharp>=0.23",
 
     # Storage. Raw psycopg over an ORM: the vector, RRF and recursive-CTE
     # queries are the interesting part, and an ORM would obscure them.
