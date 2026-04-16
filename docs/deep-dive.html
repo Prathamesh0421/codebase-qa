@@ -769,11 +769,29 @@
       <dt>Decision</dt>
       <dd>Tree-sitter grammars ship <code>queries/tags.scm</code> declaring captures like <code>@definition.function</code>, <code>@definition.class</code> and <code>@reference.call</code> — the same mechanism GitHub uses for cross-language code navigation. One query-driven code path replaces N parsers. Adding a language ships a <code>.scm</code> file, not code.</dd>
       <dt>Verified</dt>
-      <dd>Checked across nine grammars before designing around it. Definitions + calls: python, javascript, go, java, rust, ruby, php. Definitions only: typescript, cpp. No queries at all: c_sharp.</dd>
+      <dd>Checked across nine grammars before designing around it. Definitions + calls: python, javascript, go, java, rust, ruby, php. Definitions only: typescript, cpp. No queries at all: c_sharp. Built in Phase 2 as 10 individually pinned grammar packages plus two override queries — 11 languages registered, 28 unit tests pinning the exact captures each query produces against real code.</dd>
       <dt class="k-give">Gave up</dt>
       <dd>Precision. A hand-written walker with type information would resolve calls better. Tag queries are syntactic — they see <code>foo()</code>, not what <code>foo</code> resolves to.</dd>
       <dt class="k-ask">If asked</dt>
       <dd>"Languages carry a declared capability tier rather than silently degrading. Tier 1 gets real call edges; tier 2 gets chunks and approximate edges; tier 3 gets chunks and symbols only. The system reports which tier it used, so nobody mistakes an approximation for analysis."</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>Rejected a bulk grammar-pack dependency</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd><code>tree-sitter-language-pack</code> on PyPI offers 371 languages behind one dependency — the obvious shortcut once the tag-query approach was decided, and worth checking before pinning ten packages by hand.</dd>
+      <dt>Red flags, checked before adopting</dt>
+      <dd>
+        Its API is far larger than "grammar pack" implies — <code>CodeChunk</code>, <code>SymbolInfo</code>, <code>DownloadManager</code>, <code>download_all</code> — and that last pair matters: it fetches <strong>compiled native binaries at runtime</strong> rather than shipping them in the wheel. Publisher is <code>xberg-io</code>, a commercial org on GitHub created October 2025, not the canonical <code>tree-sitter</code> maintainers. The repo itself is real and active (454 stars, pushed same-day) — this isn't a typosquat — but young and feature-bloated for what should be a thin grammar wrapper.
+      </dd>
+      <dt>Decision</dt>
+      <dd>Rejected. This project clones and parses <strong>arbitrary third-party repositories</strong>. A dependency that downloads and dynamically loads native code from the network at runtime reintroduces exactly the supply-chain risk that "tree-sitter parses but never executes" exists to rule out — the exposure moves from the untrusted repo being parsed to the parser itself.</dd>
+      <dt class="k-give">Gave up</dt>
+      <dd>Convenience. Ten explicit dependencies and two hand-written override queries instead of one. Each was installed and its <code>tags.scm</code> content inspected directly rather than trusted from memory.</dd>
+      <dt class="k-ask">If asked</dt>
+      <dd>"I don't reject a dependency for being young — I reject it for what it does at runtime combined with what this system does with untrusted input. A grammar pack that only unpacks wheels at install time would have been a fine shortcut; one that fetches binaries while indexing a stranger's repository is a different risk profile entirely."</dd>
     </dl>
   </div>
 
@@ -944,6 +962,75 @@
       nothing. The same reasoning produced the measured HNSW finding below.
     </p>
   </div>
+
+  <h3>Phase 2 — Language layer <span class="phase-status done">Done</span></h3>
+  <p>
+    A grammar registry and one query-execution path (<code>extract_tags</code>)
+    that every tier1/tier2 language runs through. Nothing in that function is
+    language-specific — language knowledge lives entirely in query text,
+    verified against real parse trees before being written.
+  </p>
+
+  <h4>What got built, and what got rejected first</h4>
+  <p>
+    The obvious shortcut for "all languages" was a bulk grammar-pack
+    dependency — 371 languages behind one <code>pip install</code>. Checked
+    before adopting it and rejected: its API downloads compiled native
+    binaries at runtime, published by a young commercial org, not the
+    canonical tree-sitter maintainers. For a system that parses arbitrary
+    third-party repositories, that is the wrong place to introduce a runtime
+    network fetch of native code. See the decision above for the full
+    comparison. Ten official grammar packages are pinned individually instead,
+    each verified by installing it and inspecting its actual
+    <code>tags.scm</code> content directly — not assumed from documentation.
+  </p>
+
+  <h4>Two gaps needed override queries, and both surprised in a different way</h4>
+  <ul>
+    <li>
+      <strong>TypeScript's own <code>tags.scm</code> is missing more than call
+      references</strong> — no <code>function_declaration</code> or
+      <code>class_declaration</code> at all, only the <code>abstract_*</code>
+      variants. Ordinary code produces nothing from the upstream query alone.
+      The fix borrows JavaScript's patterns directly, verified by parsing real
+      TypeScript — including confirming the same query survives JSX syntax in
+      the separate TSX grammar, since <code>.tsx</code> uses a different
+      grammar entry point than <code>.ts</code>.
+    </li>
+    <li>
+      <strong>C++ has definitions but zero call references</strong>, and both
+      <code>obj.method()</code> and <code>obj-&gt;method()</code> turned out to
+      resolve to the identical <code>field_expression</code> node shape in
+      this grammar — one override pattern covers both syntaxes, confirmed by
+      parsing both forms rather than assumed from C++ syntax rules.
+    </li>
+  </ul>
+
+  <h4>A mechanical trap that would have silently produced wrong data</h4>
+  <p>
+    tree-sitter's Python API offers two ways to run a query:
+    <code>QueryCursor.captures()</code> returns a flat dict per capture name,
+    and <code>QueryCursor.matches()</code> groups captures by which pattern
+    match they came from. Multi-function files exposed the difference —
+    <code>.captures()</code> would in general lose the correspondence between
+    a specific <code>@name</code> and its <code>@definition.function</code>
+    when several functions exist in one file, since both land in the same flat
+    list with no guaranteed alignment between them.
+    <code>extract_tags</code> uses <code>.matches()</code>, and
+    <code>test_multiple_definitions_paired_with_correct_names</code> pins the
+    correct pairing so a future refactor toward the more obviously named
+    <code>.captures()</code> method fails loudly instead of silently
+    mislabeling functions.
+  </p>
+
+  <p><strong>Verification:</strong> 28 unit tests green — 11 languages detected
+  correctly by extension, tier assignment for all three tiers, real extraction
+  against Python/JavaScript/TypeScript/TSX/C++/C#, JSX parsed without error in
+  both the plain JS and TSX grammars, the <code>#not-eq?</code> predicate
+  confirmed to actually exclude <code>constructor</code> from method
+  definitions (proving real tree-sitter predicates are honored, not just
+  silently ignored), and confirmation that non-definition captures like
+  <code>@doc</code> and <code>@local.scope</code> never leak into results.</p>
 </section>
 
 <!-- ============================================================ 07 -->
@@ -1215,6 +1302,32 @@
   </details>
 
   <h3>On engineering judgment</h3>
+
+  <details>
+    <summary>How do you decide whether to trust a dependency?</summary>
+    <div class="answer">
+      <p>
+        By what it does at runtime combined with what the system does with
+        untrusted input — not by how convenient it is. A bulk grammar-pack
+        library offering 371 languages in one dependency looked like an easy
+        win right up until I read its API and found <code>DownloadManager</code>
+        and <code>download_all</code>: it fetches compiled native binaries over
+        the network at runtime, from a commercial org created a few months
+        earlier, not the canonical tree-sitter maintainers.
+      </p>
+      <p>
+        That's disqualifying specifically <em>here</em>, because this system
+        clones and parses arbitrary third-party repositories. A dependency
+        that downloads and dynamically loads native code while indexing a
+        stranger's repo reintroduces exactly the supply-chain risk that
+        "tree-sitter parses but never executes" is supposed to rule out. I
+        checked PyPI metadata, the GitHub org's creation date, and the
+        package's actual exported API before deciding — not just the
+        star count. Ten official packages, individually pinned, cost more
+        typing and bought a supply chain I could actually reason about.
+      </p>
+    </div>
+  </details>
 
   <details>
     <summary>How do you know call-graph expansion actually helps?</summary>

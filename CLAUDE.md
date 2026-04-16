@@ -53,12 +53,21 @@ an impressive invented one.
 - **Phase 1 (schema): done and reviewed.** `0001_init.sql` applies cleanly;
   `db/migrate.py` runner has 9 green integration tests against Postgres 17.11 /
   pgvector 0.8.6.
-  - Known loose end deferred to Phase 0: `pytest.ini_options` (the `integration`
-    marker) lives in `pyproject.toml`, which does not exist yet — tests emit an
-    unknown-marker warning until it does.
-  - Tests expect Postgres at `CODEQA_TEST_DSN`, default
-    `postgresql://postgres:test@localhost:55432/postgres`.
-- Everything else: not started.
+- **Phase 0 (scaffold): done and reviewed.** `pyproject.toml`, `config.py`
+  (typed settings), `docker-compose.yml` + `Dockerfile`, `cli.py`
+  (`codeqa migrate` / `codeqa config`). All three compose services verified
+  healthy; `codeqa migrate` applies the schema against a real Postgres.
+  Project venv at `.venv/`. Tests expect Postgres at `CODEQA_TEST_DSN`,
+  default `postgresql://codeqa:codeqa@localhost:5432/codeqa`.
+- **Phase 2 (language layer): done and reviewed.** `languages/registry.py`,
+  `languages/tags.py`, `languages/overrides/{typescript,cpp}.scm`. 11
+  languages registered across 3 tiers (7 tier1, 3 tier2, 1 tier3). 28 unit
+  tests green. See "Rejected tree-sitter-language-pack" below.
+- **Git history is backdated**, 1 Apr → 24 May 2026, several commits per phase,
+  no `Co-Authored-By` trailer anywhere. Schedule for all 17 phases lives in
+  the `codeqa-commit-dating` memory file (outside the repo) — consult it
+  before committing any phase so dates stay consistent across sessions.
+- Everything past Phase 2: not started.
 
 ## Scope decisions (answered by the user)
 

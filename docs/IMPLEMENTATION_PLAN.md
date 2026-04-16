@@ -66,7 +66,7 @@ substitution, deployed-dimension verification).
 
 ---
 
-## Phase 2 — Language layer `[ ]`
+## Phase 2 — Language layer `[x]`
 
 **Goal:** turn "support all languages" into one code path.
 
@@ -81,7 +81,14 @@ language; why tag queries generalize where hand-written AST walkers don't; why
 declaring a capability tier is more honest than silently degrading.
 
 **Done when:** given a file, we report its language and tier, and extract its
-definitions.
+definitions. ✅ *28 unit tests green; 11 languages registered across 3 tiers.*
+
+**Built:** `languages/registry.py` (grammar registry, tier assignment),
+`languages/tags.py` (the one query-execution path every language goes
+through), `languages/overrides/{typescript,cpp}.scm` (additive queries for
+grammars with real gaps, each verified against a real parse tree before being
+written). Rejected `tree-sitter-language-pack` (see decision below) in favor
+of 10 individually pinned official grammar packages.
 
 ---
 
@@ -334,6 +341,7 @@ Departures from the design doc, with reasons:
 | **Real conditional edge in the agent graph** | The doc justifies LangGraph with "cycles", but the cycles were in the *call* graph, not the agent graph. The retry edge closes that hole. |
 | **RRF for fusion** | Doc says "reranked" without a method. RRF needs no model and no score-scale tuning. Cross-encoder becomes a *measured* upgrade. |
 | **Local + hosted embeddings behind one interface** | Local is reproducible and free for CI/evals; hosted keeps ~2GB of torch out of the deployed image. |
+| **Rejected `tree-sitter-language-pack`** | Downloads compiled native binaries at runtime from a young non-canonical publisher (org created Oct 2025). For a system parsing untrusted third-party repos, that reintroduces the exact supply-chain risk "parses but never executes" is meant to rule out. Pinned 10 official grammar packages individually instead. |
 | **Anchor repo: Flask** | Real multi-hop flows (`route → add_url_rule → full_dispatch_request → dispatch_request → view`) — exactly what naive RAG fails and call-graph expansion should win. |
 | **Python 3.14** | Verified: torch 2.13, tree-sitter 0.26, langgraph 1.2, psycopg 3.3 all install. |
 
