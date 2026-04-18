@@ -79,6 +79,9 @@ dev = [
     "pytest>=8.4",
     "pytest-asyncio>=1.0",
     "pytest-cov>=6.0",
+    # Runs each test FILE in its own process (see addopts below) -- required
+    # on this Python version, not just for speed. See pytest addopts comment.
+    "pytest-xdist>=3.6",
     "httpx>=0.28",
     # Test-only: the reference implementation that the production Postgres
     # recursive-CTE traversal is differential-tested against.
@@ -107,6 +110,20 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# --dist loadfile -n auto: each test FILE runs in its own worker process.
+# This is a correctness requirement on this Python version, not a speed
+# optimization. Running test_chunker.py and test_languages.py in the same
+# process crashes with a segfault deep in a compiled tree-sitter grammar
+# binding -- reproduced reliably, but NOT reproducible calling the exact same
+# chunk_file()/extract_tags() sequence directly in a plain script, and not
+# explained by GC timing or pytest's assertion rewriting (both ruled out
+# directly). Most likely a native memory bug in a grammar wheel not yet
+# hardened against Python 3.14.2 (a very recent release at time of writing).
+# File-level process isolation avoids it reliably -- verified across
+# multiple runs. See docs/deep-dive.html for the investigation and the
+# Phase 4 note on why this also matters for the real indexing worker, not
+# just tests.
+addopts = "--dist loadfile -n auto"
 markers = [
     "integration: requires Postgres and Redis (deselect with '-m \"not integration\"')",
 ]

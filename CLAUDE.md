@@ -63,11 +63,26 @@ an impressive invented one.
   `languages/tags.py`, `languages/overrides/{typescript,cpp}.scm`. 11
   languages registered across 3 tiers (7 tier1, 3 tier2, 1 tier3). 28 unit
   tests green. See "Rejected tree-sitter-language-pack" below.
+- **Phase 3 (chunking): done and reviewed.** `indexing/chunker.py` — Tags →
+  Chunks via containment-based method reclassification (handles Python's and
+  PHP's lack of a structural method/function distinction uniformly). 17 unit
+  tests green. See "pytest + tree-sitter segfault" below — this is where it
+  was found and fixed.
 - **Git history is backdated**, 1 Apr → 24 May 2026, several commits per phase,
   no `Co-Authored-By` trailer anywhere. Schedule for all 17 phases lives in
   the `codeqa-commit-dating` memory file (outside the repo) — consult it
   before committing any phase so dates stay consistent across sessions.
-- Everything past Phase 2: not started.
+- Everything past Phase 3: not started.
+- **`pytest` requires `--dist loadfile -n auto`** (set as the default via
+  `addopts` in `pyproject.toml`, so plain `pytest` already does this — no
+  flags needed). Running `tests/unit/test_chunker.py` and
+  `tests/unit/test_languages.py` in the same process segfaults on this
+  Python 3.14.2 build; file-level process isolation avoids it reliably. Full
+  investigation in the deep-dive's war stories. **Carry this forward: any
+  new test file that imports `codeqa.languages` or `codeqa.indexing.chunker`
+  needs no special handling — the addopts default already isolates it —
+  but do not remove `--dist loadfile` without re-verifying this is fixed
+  upstream first.**
 
 ## Scope decisions (answered by the user)
 

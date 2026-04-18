@@ -1031,6 +1031,67 @@
   definitions (proving real tree-sitter predicates are honored, not just
   silently ignored), and confirmation that non-definition captures like
   <code>@doc</code> and <code>@local.scope</code> never leak into results.</p>
+
+  <h3>Phase 3 — AST-aware chunking <span class="phase-status done">Done</span></h3>
+  <p>
+    Turns Phase 2's Tags into Chunks matching the <code>chunks</code> table:
+    <code>(kind, symbol_name, qualified_name, start_line, end_line, content,
+    content_sha)</code>. One invariant governs the whole module: content is
+    always the verbatim, syntactically complete span of a single definition —
+    never truncated, never re-windowed at a fixed character count, regardless
+    of size. A 500-statement function is one unsplit chunk; splitting it would
+    undo the entire quality claim this project makes over naive RAG.
+  </p>
+
+  <h4>The reclassification problem, and why it's one rule, not two</h4>
+  <p>
+    Python's <code>tags.scm</code> has no <code>definition.method</code> at
+    all — every function, top-level or nested, is
+    <code>definition.function</code>. Checked PHP while building this and
+    found the identical gap: <code>method_declaration</code> is also tagged
+    <code>definition.function</code>. Rather than special-case both
+    languages, the chunker reclassifies any function-kind tag whose byte
+    range is contained by an enclosing class/interface/type tag into a
+    method — one rule that happens to fix two languages, and is a no-op for
+    grammars (JS, Go, Java, Rust, Ruby) that already distinguish methods
+    structurally.
+  </p>
+  <p>
+    That containment check was then verified <em>not</em> to apply
+    everywhere it plausibly could. Go's receiver methods and Rust's
+    <code>impl</code>-block methods looked like they should qualify the same
+    way — until parsing real code showed both are byte-range
+    <strong>siblings</strong> of their struct/type, not children of it. A Go
+    method's span starts only after its struct's span already ends.
+    <code>qualified_name</code> stays <code>None</code> there, and it's
+    pinned as expected behavior in the tests, not left to be "discovered"
+    later as a bug.
+  </p>
+
+  <p><strong>Verification:</strong> 17 unit tests green, including containment
+  reclassification for Python and PHP, confirmation that JS's own
+  method-tagging agrees with containment rather than conflicting, the
+  Go/Rust sibling gap pinned as intentional, interface/struct/mod mapping to
+  the schema's four chunk kinds, the whole-file fallback for tier3 languages
+  and definition-free files, and a 500-statement function proven to remain
+  one unsplit chunk.</p>
+
+  <div class="callout honest">
+    <span class="callout-label">A detour: a real segfault, found and fixed</span>
+    <p>
+      Running the full suite crashed the interpreter outright — not a test
+      failure, a <code>Fatal Python error: Segmentation fault</code> inside a
+      compiled tree-sitter binding. Confirmed the actual indexing code was
+      not at fault (the identical function calls ran cleanly in a plain
+      script), bisected to a specific test-file ordering, and ruled out
+      free-threading, GC timing, and assertion rewriting one at a time before
+      landing on the real, verified fix: process-level test isolation via
+      <code>pytest-xdist --dist loadfile</code>. Full writeup in War Stories —
+      it's some of the strongest debugging evidence in this project, and it
+      surfaces a real question for Phase 4's indexing worker design, not just
+      a test-suite inconvenience.
+    </p>
+  </div>
 </section>
 
 <!-- ============================================================ 07 -->
@@ -1116,6 +1177,41 @@
       <dd>The dimension is then unguarded by the checksum, so it needs its own check: read the deployed column type via <code>format_type</code> and refuse to boot on mismatch. Vectors from different models still produce well-formed similarity scores — they're just meaningless, and every downstream eval number inherits the corruption.</dd>
       <dt>Lesson</dt>
       <dd>"The file is immutable, the config may vary" is the actual invariant. Getting the checksum boundary wrong would have produced either false alarms or a silent gap.</dd>
+    </dl>
+  </div>
+
+  <div class="story">
+    <span class="story-tag trap">Native crash, not a logic bug</span>
+    <h3>A segfault that only appeared when two test files ran together</h3>
+    <dl class="dl-grid">
+      <dt>Symptom</dt>
+      <dd><code>Fatal Python error: Segmentation fault</code>, deep inside a compiled tree-sitter grammar binding — not a Python exception, not a failing assertion. It surfaced running the full suite: 26 tests passed, then the interpreter died outright.</dd>
+      <dt>First, ruling out my own code</dt>
+      <dd>
+        Reproduced the exact same sequence of calls — <code>chunk_file</code> and <code>extract_tags</code> across seven languages, then <code>detect_language</code> — in a plain script with no pytest involved. Ran cleanly, every time. Whatever was wrong was not in <code>chunker.py</code> or <code>registry.py</code>; it was something about how <em>pytest itself</em> exercised the same code.
+      </dd>
+      <dt>Narrowing it down</dt>
+      <dd>
+        Bisected file combinations rather than guessing: <code>test_chunker.py</code> then <code>test_languages.py</code> crashed reliably; the reverse order didn't crash at all. That ruled out "multiple grammars in one process" as the cause — both orders touch the same eleven grammars — and pointed at something order-dependent in test execution. Checked and ruled out, one at a time: a free-threaded (no-GIL) build (confirmed disabled), garbage-collection timing (<code>gc.disable()</code> still crashed), and pytest's assertion rewriting (<code>--assert=plain</code> still crashed).
+      </dd>
+      <dt>What was actually true</dt>
+      <dd>
+        Even <code>pytest-xdist</code>'s default load-balanced distribution wasn't safe — a worker could still be handed chunker tests followed by language tests and crash exactly the same way, which confirmed this was about accumulated native state within <em>whichever process</em> ran that specific sequence, not about test files as such. <code>--dist loadfile</code>, which guarantees every test in a file stays in one worker and never interleaves with another file's tests, fixed it — verified clean across three separate runs, including the full suite with the Postgres-backed integration tests.
+      </dd>
+      <dt>Fix</dt>
+      <dd>
+        <code>pytest-xdist</code> added as a dev dependency; <code>addopts = "--dist loadfile -n auto"</code> set in <code>pyproject.toml</code> so a plain <code>pytest</code> invocation is already isolated — no flags for anyone to remember.
+      </dd>
+      <dt>What this is, honestly</dt>
+      <dd>
+        Most likely a native memory bug in one of the compiled tree-sitter grammar wheels, not yet hardened against Python 3.14.2 — a very recent release. Root-causing the exact fault would mean debugging a compiled <code>.so</code> with <code>lldb</code>, which isn't something a pinned dependency's binary lets me fix even if found. The mitigation is real and verified; the underlying binary bug is not mine to patch, so it's recorded rather than chased further.
+      </dd>
+      <dt>The uncomfortable part, stated rather than buried</dt>
+      <dd>
+        This was found in tests, but a real indexing worker also parses many files across many languages sequentially in one long-running process — the same shape of workload that triggered it here. Phase 4's indexing pipeline needs to take this seriously: a worker that can be brought down by a single file in the wrong language sequence is a real availability risk, not just a test-suite inconvenience. Worth a return visit when the indexing worker is designed — process-level isolation per file, or a supervisor that restarts a crashed worker without losing the job's progress, are both defensible responses.
+      </dd>
+      <dt>Lesson</dt>
+      <dd>A crash that doesn't reproduce in isolation isn't automatically "not a real bug" — the standalone-script test wasn't the end of the investigation, it was the piece of evidence that pointed the search at pytest's execution model instead of my code. Ruling things out in order, rather than guessing at a fix, is what turned an unreproducible flake into a mitigation with verified evidence behind it.</dd>
     </dl>
   </div>
 </section>
@@ -1302,6 +1398,55 @@
   </details>
 
   <h3>On engineering judgment</h3>
+
+  <details>
+    <summary>Walk me through debugging the segfault.</summary>
+    <div class="answer">
+      <p>
+        The full test suite died with <code>Fatal Python error: Segmentation
+        fault</code> — not a Python exception, the interpreter itself
+        crashing inside a compiled tree-sitter binding. First move was ruling
+        out my own code rather than guessing at a fix: I reproduced the exact
+        same sequence of calls — <code>chunk_file</code> and
+        <code>extract_tags</code> across seven languages — in a plain script
+        with no pytest involved. Ran cleanly, repeatedly. That told me the
+        bug was in how pytest exercised the code, not in the code itself.
+      </p>
+      <p>
+        From there I bisected rather than theorized: which combination of
+        test files triggers it, and does order matter? It did —
+        <code>test_chunker.py</code> then <code>test_languages.py</code>
+        crashed reliably, the reverse order never did. That ruled out "too
+        many grammars in one process" immediately, since both orders touch
+        the same eleven grammars. Then I ruled out three specific hypotheses
+        one at a time, each with a fast, decisive check rather than a
+        plausible-sounding guess: a free-threaded Python build (checked
+        directly, not the case), garbage-collection timing
+        (<code>gc.disable()</code>, still crashed), and pytest's assertion
+        rewriting (<code>--assert=plain</code>, still crashed).
+      </p>
+      <p>
+        What was left pointed at accumulated native state within whichever
+        process ran that specific sequence — confirmed when even
+        <code>pytest-xdist</code>'s default load-balanced distribution still
+        crashed a worker that happened to get unlucky ordering.
+        <code>--dist loadfile</code>, which guarantees a file's tests never
+        interleave with another file's in the same process, fixed it —
+        verified across three separate runs before I trusted it.
+      </p>
+      <p>
+        I did not chase the exact native root cause further. It's almost
+        certainly a memory bug in a compiled grammar wheel not yet hardened
+        against Python 3.14.2, a very recent release at the time — finding
+        the precise line would mean debugging a <code>.so</code> I can't
+        patch even if I found it. The mitigation is verified and real; I
+        recorded the open question rather than pretending it's closed, and
+        flagged that a long-running indexing worker parsing many languages
+        sequentially is the same shape of workload, so it's worth revisiting
+        when that worker gets built.
+      </p>
+    </div>
+  </details>
 
   <details>
     <summary>How do you decide whether to trust a dependency?</summary>

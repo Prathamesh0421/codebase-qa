@@ -92,7 +92,7 @@ of 10 individually pinned official grammar packages.
 
 ---
 
-## Phase 3 — AST-aware chunking `[ ]`
+## Phase 3 — AST-aware chunking `[x]`
 
 **Goal:** the doc's single biggest quality claim.
 
@@ -104,7 +104,15 @@ of 10 individually pinned official grammar packages.
 definitions are attributed; what to do with a 2,000-line function.
 
 **Done when:** chunking Flask produces syntactically complete chunks, and unit
-tests pin the boundaries.
+tests pin the boundaries. ✅ *17 unit tests green.*
+
+**Built:** `indexing/chunker.py` — Tags → Chunks with containment-based method
+reclassification (uniform fix for Python and PHP both lacking a structural
+method/function distinction), verified-not-guessed handling of Go/Rust's
+sibling-not-nested method structure, and a whole-file fallback that makes
+tier3 languages retrievable. Along the way: found and fixed a pytest +
+tree-sitter segfault on Python 3.14.2 by isolating test files into separate
+processes (`pytest-xdist`, `--dist loadfile`) — see deep-dive war stories.
 
 ---
 
