@@ -23,7 +23,17 @@ dependencies = [
     # in languages/queries/): typescript, cpp.
     # C# ships no tags.scm at all and has no override yet -- tier 3, detected
     # but not chunked at function granularity. See docs/deep-dive.html.
-    "tree-sitter>=0.26",
+    #
+    # PINNED BELOW 0.26: tree-sitter 0.26.0 segfaults the interpreter on
+    # Python 3.14.2 when reading Node.start_point/end_point while iterating
+    # QueryCursor.matches() over a file with many matches. Reproduced 100%
+    # deterministically on Flask's app.py (243 matches); the crash is in the
+    # compiled binding (node_get_start_point), after the extracted data is
+    # already correct. A/B tested with an identical script: 0.26.0 crashed
+    # 3/3 runs, 0.25.2 passed 3/3. All 11 grammar specs verified working
+    # against 0.25.2 (grammar ABI 14-15, runtime supports 13-15).
+    # Revisit when a 3.14-hardened 0.26.x ships. See docs/deep-dive.html.
+    "tree-sitter>=0.25,<0.26",
     # Version floors are what was actually installed and verified against
     # (registry.py, tests/unit/test_languages.py) -- not a copy-pasted
     # round number. They vary because each grammar has its own release
@@ -44,6 +54,11 @@ dependencies = [
     "psycopg[binary,pool]>=3.3",
     "pgvector>=0.5",
     "redis>=6.0",
+
+    # Indexing. pathspec parses real .gitignore syntax (negation patterns,
+    # directory-only patterns) -- worth a small dependency rather than
+    # hand-rolling glob matching and getting those subtleties wrong.
+    "pathspec>=0.12",
 
     # API
     "fastapi>=0.141",
@@ -79,9 +94,6 @@ dev = [
     "pytest>=8.4",
     "pytest-asyncio>=1.0",
     "pytest-cov>=6.0",
-    # Runs each test FILE in its own process (see addopts below) -- required
-    # on this Python version, not just for speed. See pytest addopts comment.
-    "pytest-xdist>=3.6",
     "httpx>=0.28",
     # Test-only: the reference implementation that the production Postgres
     # recursive-CTE traversal is differential-tested against.
@@ -103,6 +115,10 @@ packages = ["src/codeqa"]
 [tool.ruff]
 line-length = 100
 target-version = "py314"
+# Vendored third-party source used as indexing fixtures. It is input data,
+# not our code -- linting or reformatting it would both be wrong and would
+# invalidate the fixture as a realistic sample of a real repository.
+extend-exclude = ["tests/fixtures/repos"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -110,20 +126,13 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-# --dist loadfile -n auto: each test FILE runs in its own worker process.
-# This is a correctness requirement on this Python version, not a speed
-# optimization. Running test_chunker.py and test_languages.py in the same
-# process crashes with a segfault deep in a compiled tree-sitter grammar
-# binding -- reproduced reliably, but NOT reproducible calling the exact same
-# chunk_file()/extract_tags() sequence directly in a plain script, and not
-# explained by GC timing or pytest's assertion rewriting (both ruled out
-# directly). Most likely a native memory bug in a grammar wheel not yet
-# hardened against Python 3.14.2 (a very recent release at time of writing).
-# File-level process isolation avoids it reliably -- verified across
-# multiple runs. See docs/deep-dive.html for the investigation and the
-# Phase 4 note on why this also matters for the real indexing worker, not
-# just tests.
-addopts = "--dist loadfile -n auto"
+# No process isolation needed. Phase 3 required pytest-xdist's
+# `--dist loadfile` to work around segfaults when multiple test files ran in
+# one process; Phase 4 root-caused that to a tree-sitter 0.26.0 regression on
+# Python 3.14 and pinned below it (see the dependency comment). With the pin,
+# the whole suite passes single-process, and xdist was measurably ~2x SLOWER
+# here because every worker reloads the embedding model. Removed rather than
+# left in place as cargo-cult config.
 markers = [
     "integration: requires Postgres and Redis (deselect with '-m \"not integration\"')",
 ]
