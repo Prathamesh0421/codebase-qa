@@ -28,7 +28,7 @@ EMBEDDING_DIM = 384
 @pytest.fixture
 def dsn() -> str:
     base = os.environ.get(
-        "CODEQA_TEST_DSN", "postgresql://postgres:test@localhost:55432/postgres"
+        "CODEQA_TEST_DSN", "postgresql://codeqa:codeqa@localhost:5432/codeqa"
     )
     db = f"codeqa_test_{os.getpid()}"
 
