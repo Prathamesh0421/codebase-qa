@@ -116,7 +116,7 @@ processes (`pytest-xdist`, `--dist loadfile`) — see deep-dive war stories.
 
 ---
 
-## Phase 4 — Embeddings and the indexing pipeline `[ ]`
+## Phase 4 — Embeddings and the indexing pipeline `[x]`
 
 **Goal:** chunks become searchable vectors.
 
@@ -129,6 +129,19 @@ throughput; why the model name is stored alongside the vectors; local vs hosted
 as a deployment-size tradeoff, not a quality one.
 
 **Done when:** Flask indexes end-to-end and `chunks` is populated with vectors.
+✅ *`codeqa index` on the Flask fixture: **24 files, 446 chunks in 4.5s** — 308
+methods, 81 functions, 53 classes, 4 module fallbacks; every vector 384-dim.
+16 integration + 16 unit tests green.*
+
+**Built:** `indexing/embeddings.py` (provider interface, local + hosted),
+`indexing/walker.py` (gitignore-aware file enumeration), `indexing/store.py`
+(persistence + embedder/repo consistency guard), `indexing/pipeline.py`
+(walk→chunk→embed→persist, batched repo-wide), and `codeqa index` in the CLI.
+
+**Also root-caused the Phase 3 segfault** rather than leaving it mitigated —
+it was a tree-sitter 0.26.0 regression on Python 3.14, now pinned `<0.26`. The
+`pytest-xdist` workaround from Phase 3 was removed as no longer needed (and it
+was measurably 2x slower).
 
 ---
 

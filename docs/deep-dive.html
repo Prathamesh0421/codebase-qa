@@ -1077,21 +1077,88 @@
   one unsplit chunk.</p>
 
   <div class="callout honest">
-    <span class="callout-label">A detour: a real segfault, found and fixed</span>
+    <span class="callout-label">A detour: a segfault, mitigated here and root-caused in Phase 4</span>
     <p>
-      Running the full suite crashed the interpreter outright — not a test
-      failure, a <code>Fatal Python error: Segmentation fault</code> inside a
-      compiled tree-sitter binding. Confirmed the actual indexing code was
-      not at fault (the identical function calls ran cleanly in a plain
-      script), bisected to a specific test-file ordering, and ruled out
-      free-threading, GC timing, and assertion rewriting one at a time before
-      landing on the real, verified fix: process-level test isolation via
-      <code>pytest-xdist --dist loadfile</code>. Full writeup in War Stories —
-      it's some of the strongest debugging evidence in this project, and it
-      surfaces a real question for Phase 4's indexing worker design, not just
-      a test-suite inconvenience.
+      Running the full suite crashed the interpreter outright — a
+      <code>Fatal Python error: Segmentation fault</code> inside a compiled
+      tree-sitter binding. Confirmed the indexing code was not at fault,
+      bisected to a specific test-file ordering, ruled out free-threading, GC
+      timing and assertion rewriting one at a time, and shipped process-level
+      test isolation as a verified mitigation. It came back in Phase 4 on a
+      real repository, where it turned out to be a
+      <strong>tree-sitter 0.26.0 regression</strong> — pinned below it, and
+      this workaround deleted. Both halves are in War Stories; the pair is
+      the strongest debugging evidence in this project.
     </p>
   </div>
+
+  <h3>Phase 4 — Embeddings and the indexing pipeline <span class="phase-status done">Done</span></h3>
+  <p>
+    Where Phases 1–4 finally connect: schema, language detection, chunking and
+    embedding all have to agree for one <code>index_repo()</code> call to work.
+    <code>codeqa index</code> on the Flask fixture produces
+    <strong>446 chunks from 24 files in 4.5s</strong> — 308 methods, 81
+    functions, 53 classes, 4 whole-file fallbacks, every vector 384-dim.
+  </p>
+
+  <h4>Batching is measured, not assumed</h4>
+  <p>
+    The plan claims "batching dominates indexing throughput," so it got
+    measured rather than asserted: <strong>3.5x</strong> on 200 chunks
+    (1.58s one-at-a-time vs 0.45s at batch size 64). That number is the
+    reason <code>index_repo</code> chunks every file first and embeds the
+    whole repo in one batched call, rather than the more obvious
+    embed-as-you-walk — most files don't have enough chunks to fill a batch
+    on their own.
+  </p>
+
+  <h4>Two pgvector behaviours worth knowing before writing persistence code</h4>
+  <ul>
+    <li>
+      <strong>Vectors are stored as float4</strong>, so a Python float64 list
+      round-trips lossily (0.1 becomes 0.10000000149011612). Harmless, but it
+      means comparing embeddings for equality is always wrong — change
+      detection uses <code>content_sha</code> instead.
+    </li>
+    <li>
+      <strong>A vector used as a query parameter needs an explicit
+      <code>::vector</code> cast.</strong> Inserting into a known vector
+      column adapts automatically, but in <code>ORDER BY embedding &lt;=&gt;
+      %s</code> Postgres infers <code>double precision[]</code> and no vector
+      operator resolves. Found by trying it, not by reading about it.
+    </li>
+  </ul>
+
+  <h4>The guard that catches what Postgres can't</h4>
+  <p>
+    A dimension mismatch is caught by the database — the column is
+    <code>vector(N)</code>. The dangerous case is two <em>different</em>
+    models at the <em>same</em> dimension: those vectors insert cleanly and
+    compare as though they meant the same thing, corrupting similarity search
+    invisibly. So <code>check_embedder_matches_repo</code> compares model name
+    <em>and</em> dimension against the <code>repos</code> row before any file
+    is even walked, and refuses to proceed.
+  </p>
+
+  <h4>A finding that justified a schema column</h4>
+  <p>
+    Real Flask defines <code>dispatch_request</code> <strong>three
+    times</strong> — on <code>Flask</code>, <code>View</code> and
+    <code>MethodView</code>. My first test asserted there was one, and was
+    wrong. That's exactly why chunks carry <code>qualified_name</code> and not
+    just <code>symbol_name</code>: retrieving "dispatch_request" is ambiguous,
+    and a citation that can't say <em>which class</em> it came from is a
+    citation that can't be verified.
+  </p>
+
+  <p><strong>Verification:</strong> 97 tests green. Beyond the Flask
+  end-to-end run: embedding order preservation, batch size not affecting
+  output, both dimension guards, re-indexing being idempotent rather than
+  duplicating, editing a file replacing (not appending) its chunks, one bad
+  file not aborting a whole run, gitignore directory-pattern matching
+  (including that <code>mydist/</code> is <em>not</em> matched by
+  <code>dist/</code>), and <code>_blob_sha</code> matching real
+  <code>git hash-object</code> output byte for byte.</p>
 </section>
 
 <!-- ============================================================ 07 -->
@@ -1202,16 +1269,52 @@
       <dd>
         <code>pytest-xdist</code> added as a dev dependency; <code>addopts = "--dist loadfile -n auto"</code> set in <code>pyproject.toml</code> so a plain <code>pytest</code> invocation is already isolated — no flags for anyone to remember.
       </dd>
-      <dt>What this is, honestly</dt>
+      <dt>What this looked like at the time</dt>
       <dd>
-        Most likely a native memory bug in one of the compiled tree-sitter grammar wheels, not yet hardened against Python 3.14.2 — a very recent release. Root-causing the exact fault would mean debugging a compiled <code>.so</code> with <code>lldb</code>, which isn't something a pinned dependency's binary lets me fix even if found. The mitigation is real and verified; the underlying binary bug is not mine to patch, so it's recorded rather than chased further.
+        Most likely a native memory bug in a compiled tree-sitter wheel not yet hardened against Python 3.14.2 — a very recent release. Root-causing it looked like it would mean debugging a <code>.so</code> with <code>lldb</code>, so it was recorded as an open question and the verified mitigation shipped.
       </dd>
-      <dt>The uncomfortable part, stated rather than buried</dt>
+      <dt>Resolved in Phase 4 — see the next story</dt>
       <dd>
-        This was found in tests, but a real indexing worker also parses many files across many languages sequentially in one long-running process — the same shape of workload that triggered it here. Phase 4's indexing pipeline needs to take this seriously: a worker that can be brought down by a single file in the wrong language sequence is a real availability risk, not just a test-suite inconvenience. Worth a return visit when the indexing worker is designed — process-level isolation per file, or a supervisor that restarts a crashed worker without losing the job's progress, are both defensible responses.
+        It came back, bigger, when indexing a real repository. That second encounter produced the actual root cause: a regression in <strong>tree-sitter 0.26.0 specifically</strong>. Pinning below it removed the crash entirely, and the <code>pytest-xdist</code> workaround here was deleted — it was treating a symptom, and it was measurably ~2x slower.
       </dd>
       <dt>Lesson</dt>
-      <dd>A crash that doesn't reproduce in isolation isn't automatically "not a real bug" — the standalone-script test wasn't the end of the investigation, it was the piece of evidence that pointed the search at pytest's execution model instead of my code. Ruling things out in order, rather than guessing at a fix, is what turned an unreproducible flake into a mitigation with verified evidence behind it.</dd>
+      <dd>A crash that doesn't reproduce in isolation isn't automatically "not a real bug" — the standalone-script test wasn't the end of the investigation, it was the evidence that pointed the search at process-level state rather than my code. But the honest lesson is the one the next story teaches: a mitigation that works is not the same as a diagnosis, and it's worth going back for the real cause when the symptom recurs.</dd>
+    </dl>
+  </div>
+
+  <div class="story">
+    <span class="story-tag verified">Root cause, by A/B evidence</span>
+    <h3>The segfault, properly diagnosed the second time</h3>
+    <dl class="dl-grid">
+      <dt>Symptom</dt>
+      <dd>Indexing the real Flask fixture crashed the interpreter — <code>SIGSEGV</code> inside the compiled tree-sitter binding, at <code>node_get_start_point</code>. Unlike Phase 3, this reproduced <strong>outside pytest</strong>, in a plain script, 3/3 runs. Same underlying bug, now impossible to work around.</dd>
+      <dt>What made it deceptive</dt>
+      <dd>
+        Adding a <code>print()</code> between operations made it vanish — the classic signature of a use-after-free, where any change in allocation timing masks the fault. That cost real time: I formed and discarded several wrong hypotheses (node lifetime, GC pressure, dataclass construction inside the loop), each of which appeared confirmed by a passing run before collapsing on re-test. Two of them I'd already written a "fix" for.
+      </dd>
+      <dt>What broke the deadlock</dt>
+      <dd>
+        Abandoning symptom-chasing for a controlled comparison. One script, one file, one variable changed: the tree-sitter version. Results were unambiguous —
+        <div class="scroll-x">
+        <table>
+          <thead><tr><th>tree-sitter</th><th>Runs</th><th>Result</th></tr></thead>
+          <tbody>
+            <tr><td>0.26.0</td><td>3</td><td class="fail">segfault, 3/3</td></tr>
+            <tr><td>0.25.2</td><td>3</td><td class="win">clean, 3/3</td></tr>
+          </tbody>
+        </table>
+        </div>
+      </dd>
+      <dt>Fix</dt>
+      <dd>
+        Pin <code>tree-sitter&gt;=0.25,&lt;0.26</code>. Before committing to it, verified all 11 grammar specs still load and parse against 0.25.2 (grammar ABI 14–15; the 0.25.2 runtime supports 13–15), so the downgrade costs no language coverage. The whole suite then passed single-process, and the Phase 3 <code>pytest-xdist</code> workaround was removed as obsolete.
+      </dd>
+      <dt>What it cost, and what it bought</dt>
+      <dd>
+        One minor version behind latest, revisitable when a 3.14-hardened 0.26.x ships. In exchange: no workarounds anywhere in the codebase, a test suite that runs 2x faster, and — the part that actually mattered — certainty that the <em>indexing pipeline itself</em> was never the problem. A worker that dies mid-run on a large repo would have been a genuine availability defect, not a test-suite annoyance.
+      </dd>
+      <dt>Lesson</dt>
+      <dd>When symptoms shift between runs, stop generating hypotheses about the symptom and start changing one variable at a time against a fixed reproduction. I should have reached for the version A/B two hours earlier than I did — the tell was that each "confirmed" fix stopped working, which is evidence the model is wrong, not that the fix needs refining.</dd>
     </dl>
   </div>
 </section>

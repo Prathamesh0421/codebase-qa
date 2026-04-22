@@ -72,17 +72,20 @@ an impressive invented one.
   no `Co-Authored-By` trailer anywhere. Schedule for all 17 phases lives in
   the `codeqa-commit-dating` memory file (outside the repo) — consult it
   before committing any phase so dates stay consistent across sessions.
-- Everything past Phase 3: not started.
-- **`pytest` requires `--dist loadfile -n auto`** (set as the default via
-  `addopts` in `pyproject.toml`, so plain `pytest` already does this — no
-  flags needed). Running `tests/unit/test_chunker.py` and
-  `tests/unit/test_languages.py` in the same process segfaults on this
-  Python 3.14.2 build; file-level process isolation avoids it reliably. Full
-  investigation in the deep-dive's war stories. **Carry this forward: any
-  new test file that imports `codeqa.languages` or `codeqa.indexing.chunker`
-  needs no special handling — the addopts default already isolates it —
-  but do not remove `--dist loadfile` without re-verifying this is fixed
-  upstream first.**
+- **Phase 4 (embeddings + indexing): done and reviewed.**
+  `indexing/{embeddings,walker,store,pipeline}.py` + `codeqa index`. Flask
+  fixture indexes end-to-end: 24 files, 446 chunks, 4.5s. 97 tests green.
+- Everything past Phase 4: not started.
+- **`tree-sitter` is pinned `>=0.25,<0.26`, and this pin is load-bearing.**
+  0.26.0 segfaults the interpreter on Python 3.14.2 when reading
+  `Node.start_point`/`end_point` during `QueryCursor.matches()` iteration on
+  a file with many matches. Reproduced 100% deterministically on Flask's
+  `app.py` (243 matches); A/B tested with an identical script — 0.26.0
+  crashed 3/3, 0.25.2 passed 3/3. All 11 grammar specs verified against
+  0.25.2 (grammar ABI 14–15, runtime supports 13–15). **Do not bump this pin
+  without re-running that A/B test.** This was also the root cause of the
+  Phase 3 pytest segfault, so the `pytest-xdist --dist loadfile` workaround
+  was removed (it was ~2x slower and no longer needed).
 
 ## Scope decisions (answered by the user)
 
