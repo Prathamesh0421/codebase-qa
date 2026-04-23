@@ -55,11 +55,21 @@ class Settings(BaseSettings):
 
     embedding_batch_size: int = 64
 
+    # Falls back to llm_api_key when unset -- see embedding_api_key property
+    # below. Only needs its own value when embeddings and synthesis use
+    # different hosted providers (e.g. OpenAI embeddings, Gemini synthesis).
+    embedding_provider_api_key: str | None = None
+
     # ------------------------------------------------------------ retrieval
     # Never remove "naive". The entire measurement story is
     # naive -> hybrid -> hybrid_graph, and the baseline has to stay runnable
     # at any commit for the comparison to be reproducible.
-    retrieval_strategy: RetrievalStrategy = "hybrid_graph"
+    #
+    # Default is "naive" until Phase 8 ships hybrid and hybrid_graph -- a
+    # default pointing at a strategy that doesn't exist yet would make `ask`
+    # fail out of the box with a NotImplementedError nobody asked for.
+    # Becomes "hybrid_graph" once all three are implemented.
+    retrieval_strategy: RetrievalStrategy = "naive"
     retrieval_top_k: int = 10
 
     # Bounds on call-graph expansion. Depth is the interview-relevant one: the
@@ -100,6 +110,17 @@ class Settings(BaseSettings):
         if not 32 <= v <= 4096:
             raise ValueError(f"embedding_dim={v} is outside any plausible range")
         return v
+
+    @property
+    def embedding_api_key(self) -> str | None:
+        """The key a hosted embedding provider should use.
+
+        Falls back to llm_api_key: the common case is one provider (e.g.
+        Gemini) serving both embeddings and synthesis, and requiring two
+        separate keys for that case would be friction with no benefit.
+        embedding_provider_api_key is the escape hatch for when they diverge.
+        """
+        return self.embedding_provider_api_key or self.llm_api_key
 
     @property
     def dsn(self) -> str:
