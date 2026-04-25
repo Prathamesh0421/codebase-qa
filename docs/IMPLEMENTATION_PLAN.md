@@ -145,7 +145,7 @@ was measurably 2x slower).
 
 ---
 
-## Phase 5 — Naive retrieval baseline + CLI `[ ]`
+## Phase 5 — Naive retrieval baseline + CLI `[x]`
 
 **Goal:** the first working answer — *and the eval baseline*.
 
@@ -160,6 +160,30 @@ was measurably 2x slower).
 prompt means; exactly where naive RAG fails on code (this is the thesis).
 
 **Done when:** you can ask Flask a question and get a cited answer.
+✅ *`codeqa ask "how does Flask dispatch an incoming request to a view
+function?" --repo flask` retrieves the exact multi-hop chain
+(`Flask.full_dispatch_request`, `Flask.dispatch_request`,
+`View.dispatch_request`, `MethodView.dispatch_request`) and streams a cited
+answer. 21 new tests, 119 total green.*
+
+**Built:** `retrieval/strategy.py` (the `RetrievalStrategy` protocol + factory,
+built for all three modes now so nothing needs retrofitting when Phase 8
+lands), `retrieval/naive.py` (cosine similarity, the code that must never be
+deleted), `synthesis.py` (prompt building + streaming, shared with Phase 10's
+synthesize node rather than duplicated), and `codeqa ask`.
+
+**Found and fixed two config landmines** left over from earlier phases:
+`retrieval_strategy` defaulted to `"hybrid_graph"`, which doesn't exist until
+Phase 8 — `ask` would have failed out of the box. And the embedding API key
+was silently reusing `llm_api_key` since Phase 4 with no comment explaining
+it; now an explicit `embedding_api_key` property with a documented fallback.
+
+**Found a real, silently-corrupting bug**, not a cosmetic one: rich's
+`Console.print()` parses `[...]` as markup by default, so a streamed answer
+containing `list[str]` printed as `List` — precisely the kind of text an LLM
+answering questions about code will routinely produce. Fixed with
+`markup=False` on the streamed tokens; reproduced and regression-tested
+before trusting the fix.
 
 ---
 

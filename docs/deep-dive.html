@@ -796,6 +796,22 @@
   </div>
 
   <div class="decision">
+    <h3>The retrieval strategy interface, built before it had a second implementation</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>Phase 5 needs exactly one retrieval strategy: naive cosine similarity. Hybrid and hybrid+graph don't arrive until Phase 8.</dd>
+      <dt>Decision</dt>
+      <dd>Design the full <code>RetrievalStrategy</code> protocol now — <code>retrieve(conn, repo_id, query_text, embedder, top_k)</code> — with <code>naive</code> as the only implementation, and <code>hybrid</code>/<code>hybrid_graph</code> raising a clear <code>NotImplementedError</code> naming the phase that adds them.</dd>
+      <dt>Reason</dt>
+      <dd>This is normally the shape of premature abstraction the project's own principles warn against — an interface for implementations that don't exist yet. It earns an exception here because the entire evaluation story is a comparison across three strategies at the <em>same</em> commit, selected by one config value. Building naive as a bare function first and refactoring it behind an interface once hybrid exists risks the naive path quietly changing shape during that refactor — which breaks the reproducibility the comparison depends on.</dd>
+      <dt class="k-give">Gave up</dt>
+      <dd>Nothing built for hybrid or hybrid+graph beyond their signatures — no speculative lexical-search or graph-traversal code exists yet. The interface is committed to; the future implementations are not.</dd>
+      <dt class="k-ask">If asked</dt>
+      <dd>"Doesn't this contradict 'don't design for hypothetical future requirements'? Normally yes. The exception is that the requirement isn't hypothetical — Phase 8 and Phase 9 are both already scoped, and the interface is the thing being measured, not a guess at one."</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
     <h3>Postgres recursive CTE for traversal, networkx as test oracle</h3>
     <dl class="dl-grid">
       <dt>Context</dt>
@@ -1159,6 +1175,50 @@
   (including that <code>mydist/</code> is <em>not</em> matched by
   <code>dist/</code>), and <code>_blob_sha</code> matching real
   <code>git hash-object</code> output byte for byte.</p>
+
+  <h3>Phase 5 — Naive retrieval baseline and CLI <span class="phase-status done">Done</span></h3>
+  <p>
+    The retrieval strategy interface — built for all three modes now,
+    with only <code>naive</code> implemented — plus a shared synthesis
+    module and <code>codeqa ask</code>. Retrieving against the indexed Flask
+    fixture surfaces exactly the multi-hop request chain the design doc
+    uses as its own example of what naive RAG should fail at:
+    <code>Flask.full_dispatch_request</code>, <code>Flask.dispatch_request</code>,
+    <code>View.dispatch_request</code>, <code>MethodView.dispatch_request</code>
+    all rank in the top 10 for a single natural-language question.
+  </p>
+
+  <h4>Two config defaults that would have broken the CLI on first use</h4>
+  <ul>
+    <li>
+      <code>retrieval_strategy</code> defaulted to <code>"hybrid_graph"</code>
+      — the doc's eventual intent, set as a placeholder back in Phase 0, long
+      before <code>hybrid_graph</code> existed. Left as-is, <code>codeqa
+      ask</code> would fail out of the box with a <code>NotImplementedError</code>
+      until Phase 8. Caught by reading the default against what's actually
+      implemented, not by running into the failure.
+    </li>
+    <li>
+      The embedding API key was silently reusing <code>llm_api_key</code>
+      since Phase 4, with no field or comment saying so. Made explicit as an
+      <code>embedding_api_key</code> property with a documented fallback,
+      and an escape hatch (<code>embedding_provider_api_key</code>) for when
+      embeddings and synthesis use different hosted providers.
+    </li>
+  </ul>
+
+  <p><strong>Verification:</strong> 21 new tests, 119 total green. Naive
+  retrieval is checked against a small purpose-built repo where "the right
+  chunk ranks first" can be asserted precisely (a password-hashing query
+  ranks <code>check_password_hash</code> first; a rate-limiting query ranks
+  <code>check_rate_limit</code> first) — the 446-chunk Flask fixture is
+  useful for the end-to-end CLI test but too large to assert exact ranking
+  against. <code>codeqa ask</code> itself is tested through
+  <code>typer.testing.CliRunner</code> with the LLM call mocked via
+  LiteLLM's own <code>mock_response</code>, the same honesty boundary as
+  <code>HostedEmbedder</code> in Phase 4: this verifies retrieval, prompt
+  construction, and output rendering for real, and states plainly that real
+  model output quality is untested without a live key.</p>
 </section>
 
 <!-- ============================================================ 07 -->
@@ -1315,6 +1375,25 @@
       </dd>
       <dt>Lesson</dt>
       <dd>When symptoms shift between runs, stop generating hypotheses about the symptom and start changing one variable at a time against a fixed reproduction. I should have reached for the version A/B two hours earlier than I did — the tell was that each "confirmed" fix stopped working, which is evidence the model is wrong, not that the fix needs refining.</dd>
+    </dl>
+  </div>
+
+  <div class="story">
+    <span class="story-tag trap">Silent, not loud — the dangerous kind</span>
+    <h3>The answer said "List" and meant "List[str]"</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>Streaming the LLM's answer to the terminal via <code>rich.Console.print(token, end="")</code>, one small fragment at a time — the same pattern that will back Phase 14's SSE endpoint.</dd>
+      <dt>Symptom</dt>
+      <dd>No crash, no exception, exit code 0. The first live-ish run (LLM mocked, since no API key is available in this environment) produced an answer that looked complete and readable. Nothing about it looked wrong.</dd>
+      <dt>How it was actually found</dt>
+      <dd>Not by noticing broken output — by testing the print path in isolation before trusting it, the same discipline applied everywhere else in this project. A one-line check: <code>Console().print("List[str]")</code> renders as <strong><code>List</code></strong>. Rich treats <code>[...]</code> as markup syntax by default, and silently drops anything it doesn't recognize as a valid tag.</dd>
+      <dt>Why this one is worse than a crash</dt>
+      <dd>A crash stops the demo. This corrupts the answer while looking entirely normal — and an LLM answering questions about <em>code</em> will routinely produce exactly the text that triggers it: <code>list[str]</code>, <code>dict[str, Any]</code>, <code>chunks[0]</code>. For a project whose central claim is grounded, trustworthy citations, silently mutilating the model's own words is the specific failure mode that matters most to rule out.</dd>
+      <dt>Fix</dt>
+      <dd><code>console.print(token, end="", markup=False, highlight=False)</code> on the streamed answer tokens only — the CLI's own styled output (citations, scores) keeps markup enabled deliberately, since that styling is intentional.</dd>
+      <dt>Lesson</dt>
+      <dd>The dangerous bugs in an LLM-output pipeline are the ones with no error signal at all. Every place this project prints or renders model-generated text is a candidate for the same class of bug, and each one needs the same one-line check before being trusted — not assumed safe because the library "just prints strings."</dd>
     </dl>
   </div>
 </section>
@@ -1547,6 +1626,35 @@
         flagged that a long-running indexing worker parsing many languages
         sequentially is the same shape of workload, so it's worth revisiting
         when that worker gets built.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How do you find bugs that don't crash and don't throw?</summary>
+    <div class="answer">
+      <p>
+        By not trusting a rendering or formatting path just because it "just
+        prints strings" — testing it with adversarial input before relying
+        on it, the same discipline used everywhere else in this project. The
+        concrete case: streaming an LLM's answer to the terminal through
+        rich's <code>Console.print()</code>. It ran, it exited 0, the output
+        looked like a normal sentence. It was wrong. Rich parses
+        <code>[...]</code> as markup by default, so
+        <code>Console().print("List[str]")</code> silently renders as
+        <code>List</code> — no error, no warning, just missing text.
+      </p>
+      <p>
+        That class of bug is worse than a crash specifically for this
+        project. A crash stops the demo; this corrupts the model's own
+        words while looking completely normal, and an LLM answering
+        questions about code will constantly produce exactly the bracket
+        syntax that triggers it —
+        <code>list[int]</code>, <code>chunks[0]</code>. For something whose
+        whole claim is trustworthy, grounded citations, silently mutilating
+        the text is the single worst failure mode to leave unrouted. Fixed
+        with <code>markup=False</code> on the streamed tokens specifically,
+        keeping it enabled for the CLI's own deliberately styled output.
       </p>
     </div>
   </details>
