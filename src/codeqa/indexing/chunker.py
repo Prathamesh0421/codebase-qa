@@ -19,7 +19,8 @@ real and complete.
 import hashlib
 from dataclasses import dataclass
 
-from codeqa.languages import LanguageSpec, Tag, extract_tags
+from codeqa.languages import LanguageSpec, extract_tags
+from codeqa.spans import smallest_enclosing
 
 ChunkKind = str  # "function" | "method" | "class" | "module" -- mirrors the DB enum
 
@@ -57,29 +58,6 @@ class Chunk:
     end_line: int
     content: str
     content_sha: str
-
-
-def _smallest_enclosing(tag: Tag, class_like: list[Tag]) -> Tag | None:
-    """The tightest class/interface/type span strictly containing tag, if any.
-
-    Byte ranges rather than line numbers: precise even when a class and its
-    first method open on the same line, and it's what tags already carry.
-    "Strictly containing" excludes tag being compared against its own span --
-    irrelevant here since tag is always a function/method capture and
-    class_like entries are always separate class/interface/type captures,
-    but stated for clarity: containment, not identity.
-    """
-    candidates = [
-        c
-        for c in class_like
-        if c.start_byte <= tag.start_byte and tag.end_byte <= c.end_byte
-    ]
-    if not candidates:
-        return None
-    # Nested classes are always disjoint-or-nested, never partially
-    # overlapping, in valid syntax -- so "smallest span" is well-defined and
-    # picks the innermost enclosing class.
-    return min(candidates, key=lambda c: c.end_byte - c.start_byte)
 
 
 def _build_chunk(
@@ -141,7 +119,7 @@ def chunk_file(spec: LanguageSpec, path: str, source: bytes) -> list[Chunk]:
 
         qualified_name = None
         if kind in ("function", "method"):
-            enclosing = _smallest_enclosing(tag, class_like)
+            enclosing = smallest_enclosing(tag, class_like)
             if enclosing is not None:
                 # Reclassify function -> method via containment rather than
                 # trusting each grammar's own labeling: Python's tags.scm has
