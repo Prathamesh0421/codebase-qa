@@ -796,6 +796,22 @@
   </div>
 
   <div class="decision">
+    <h3>Call resolution: an ordered heuristic that refuses to guess</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>A call site names a bare identifier — <code>self.dispatch_request()</code> captures the callee name <code>dispatch_request</code>, with no receiver type information. Real Flask defines that name on three different classes. Without type inference (a stated non-goal), resolving it correctly requires a different kind of evidence entirely.</dd>
+      <dt>Decision</dt>
+      <dd>An ordered sequence of heuristics, each requiring an <em>unambiguous</em> match before it's trusted: zero candidates → <code>unresolved</code>; exactly one candidate anywhere in the repo → <code>exact</code>; multiple candidates but exactly one defined on the caller's own class → <code>approximate</code>; multiple candidates but exactly one in the caller's own file → <code>approximate</code>; anything left → <code>unresolved</code>. No tier ever picks among several remaining candidates — that would be a guess wearing a resolved edge's clothes.</dd>
+      <dt>Verified against</dt>
+      <dd>The literal case that motivated it: <code>Flask.full_dispatch_request</code> calling <code>dispatch_request</code>, ambiguous across <code>Flask</code>, <code>View</code>, and <code>MethodView</code>. The same-class tier correctly picks <code>Flask.dispatch_request</code> — confirmed through the full indexing pipeline against the real fixture, not just the isolated resolver logic.</dd>
+      <dt class="k-give">Gave up</dt>
+      <dd>Recall on genuinely ambiguous calls. A cleverer heuristic (e.g. "prefer whichever candidate is textually closest") could resolve more edges, but every extra tier is another way to be confidently wrong. 787 of 1110 edges in the real Flask index are <code>unresolved</code> — mostly calls into external libraries with no chunk in the index at all, which is the honest, expected shape.</dd>
+      <dt class="k-ask">If asked</dt>
+      <dd>"Why not resolve more calls by guessing when there's a plausible-looking candidate? Because an edge in this table is meant to be trustworthy enough to walk during retrieval. A wrong edge that looks identical to a right one is worse than a missing edge, which at least fails visibly."</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
     <h3>The retrieval strategy interface, built before it had a second implementation</h3>
     <dl class="dl-grid">
       <dt>Context</dt>
@@ -1219,6 +1235,56 @@
   <code>HostedEmbedder</code> in Phase 4: this verifies retrieval, prompt
   construction, and output rendering for real, and states plainly that real
   model output quality is untested without a live key.</p>
+
+  <h3>Phase 6 — Call-graph extraction <span class="phase-status done">Done</span></h3>
+  <p>
+    The differentiator. Every call site becomes a <code>reference.call</code>
+    tag (Phase 2), attributed to its enclosing function or method chunk by
+    the same byte-span containment logic Phase 3 uses for class/method
+    reclassification — extracted into a shared <code>spans.py</code> rather
+    than duplicated a second time. Resolving the bare callee name to a real
+    chunk elsewhere in the repo is a separate, repo-wide pass that only runs
+    once every file's chunks exist, since a callee can be defined in a file
+    processed earlier or later than its caller.
+  </p>
+
+  <h4>The plan's own "done when" bar didn't survive contact with the real source</h4>
+  <p>
+    The original target was a 3-hop chain: <code>full_dispatch_request →
+    dispatch_request → view</code>. Reading the actual line before assuming
+    it would work: <code>dispatch_request</code> invokes the view via
+    <code>self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)</code>
+    — a call on the <em>return value of another call</em>, not a named
+    symbol. Extracting tags from that exact line confirmed it: only
+    <code>ensure_sync</code> is captured; nothing named "view" exists to
+    capture. This is real dynamic dispatch, structurally invisible to any
+    syntactic query — not a bug, and not something a cleverer query pattern
+    fixes. The bar was corrected rather than forced: the achievable 2-hop
+    chain (<code>full_dispatch_request → dispatch_request</code>) is what's
+    verified, and the third hop's absence is asserted explicitly in a test
+    rather than silently missing.
+  </p>
+
+  <h4>That 2-hop chain turned out to be the best possible test case</h4>
+  <p>
+    Real Flask defines <code>dispatch_request</code> three times — on
+    <code>Flask</code>, <code>View</code>, and <code>MethodView</code>.
+    Resolving <code>full_dispatch_request</code>'s call to it correctly
+    requires the same-class heuristic to actually work, not luck: with only
+    one candidate the edge would trivially resolve <code>exact</code> and
+    prove nothing about disambiguation. Confirmed:
+    <code>resolution='approximate'</code>, correctly pointing at
+    <code>Flask.dispatch_request</code> and not the other two.
+  </p>
+
+  <p><strong>Verification:</strong> 25 new tests, 150 total green. The pure
+  resolver logic is tested with the exact three-candidate shape Flask
+  produces, independent of the database; the full pipeline is tested against
+  both a synthetic repo reproducing that same shape and the real Flask
+  fixture. Indexing all of Flask produces 1110 call edges — 264 exact, 59
+  approximate, 787 unresolved. The high unresolved count is the honest
+  picture, not a shortfall: most calls in a real application reach into
+  external libraries with no chunk in the repo's own index at all.</p>
 </section>
 
 <!-- ============================================================ 07 -->
@@ -1394,6 +1460,28 @@
       <dd><code>console.print(token, end="", markup=False, highlight=False)</code> on the streamed answer tokens only — the CLI's own styled output (citations, scores) keeps markup enabled deliberately, since that styling is intentional.</dd>
       <dt>Lesson</dt>
       <dd>The dangerous bugs in an LLM-output pipeline are the ones with no error signal at all. Every place this project prints or renders model-generated text is a candidate for the same class of bug, and each one needs the same one-line check before being trusted — not assumed safe because the library "just prints strings."</dd>
+    </dl>
+  </div>
+
+  <div class="story">
+    <span class="story-tag">The plan's own success criterion was wrong</span>
+    <h3>The 3-hop chain that couldn't exist</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>Phase 6's own stated "done when" bar, written back at design time: get <code>Flask.full_dispatch_request → Flask.dispatch_request → view</code> into <code>call_edges</code>. A specific, checkable target — which is exactly why it was worth checking against the real source before building the extraction logic around it.</dd>
+      <dt>What reading the actual line showed</dt>
+      <dd>
+        <pre><code>return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)</code></pre>
+        The view isn't called by name. It's looked up at runtime from a dict (<code>view_functions[rule.endpoint]</code>), wrapped by another call (<code>ensure_sync(...)</code>), and the <em>result of that</em> is what gets invoked. tree-sitter's call-reference query matches a call whose function is a plain identifier or attribute access — a call-expression standing in as the function is a different shape entirely, and it doesn't match.
+      </dd>
+      <dt>Verified, not assumed</dt>
+      <dd>Extracted tags from that exact line before writing a single word of the extraction module. Result: <code>ensure_sync</code> is captured as a call reference; nothing named "view" is. That's not an implementation gap to fix later — there is no symbolic name for tree-sitter to have captured. The dispatch target only exists as a runtime value.</dd>
+      <dt>What this meant for the phase</dt>
+      <dd>The literal 3-hop bar as written is unachievable by any syntactic approach, including a more sophisticated one. Rather than force a workaround or quietly redefine "done" without saying so, the bar was corrected in the plan document itself, with the reasoning attached: the achievable 2-hop chain became the actual verification target, and the third hop's absence became an asserted, tested fact (<code>test_the_dynamic_view_dispatch_is_not_captured</code>) instead of a silent gap someone would eventually notice and wonder about.</dd>
+      <dt>The upside</dt>
+      <dd>The 2-hop chain that remained turned out to be a better test than the original 3-hop one would have been. <code>dispatch_request</code> is defined on three different classes in real Flask, so resolving <code>full_dispatch_request</code>'s call to it correctly requires the same-class heuristic to do real work — a single unambiguous target would have proven nothing about disambiguation at all.</dd>
+      <dt>Lesson</dt>
+      <dd>A written spec is a hypothesis, not a guarantee — including one written earlier in the same project, by the same reasoning that produced everything else. The discipline that catches a wrong dependency claim or a wrong library assumption applies exactly as well to a target the plan itself set. Checking it costs one grep-sized detour; not checking it costs building the wrong thing and finding out from a failing "done when" bar at the end.</dd>
     </dl>
   </div>
 </section>
@@ -1626,6 +1714,44 @@
         flagged that a long-running indexing worker parsing many languages
         sequentially is the same shape of workload, so it's worth revisiting
         when that worker gets built.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Walk me through resolving an ambiguous call.</summary>
+    <div class="answer">
+      <p>
+        Concretely: <code>Flask.full_dispatch_request</code> calls
+        <code>self.dispatch_request(ctx)</code>. The tag query captures the
+        bare name <code>dispatch_request</code> — no receiver type, since
+        there's no type inference here by design. Real Flask defines that
+        method on three separate classes: <code>Flask</code>,
+        <code>View</code>, <code>MethodView</code>. Naively, that's a
+        three-way tie.
+      </p>
+      <p>
+        Resolution runs as an ordered set of tie-breakers, and each one only
+        fires if it produces exactly one match. Zero candidates repo-wide
+        means the callee is external — a builtin, a third-party call — and
+        the edge is <code>unresolved</code>. One candidate means there was
+        never any ambiguity, and it's <code>exact</code>. With three
+        candidates like this one, the next tier checks whether exactly one
+        of them is defined on the <em>caller's own class</em> — since
+        <code>full_dispatch_request</code> is itself a method of
+        <code>Flask</code>, and exactly one candidate is
+        <code>Flask.dispatch_request</code>, that's the match. Labeled
+        <code>approximate</code>, not <code>exact</code> — the heuristic
+        could in principle be wrong (inheritance, a same-named unrelated
+        method), so the confidence level says so honestly.
+      </p>
+      <p>
+        If that tier also failed to narrow it to one, there's a second
+        tier — same file as the caller — and after that, the edge is left
+        <code>unresolved</code> rather than picking one of the remaining
+        candidates arbitrarily. An edge sitting in the database has to be
+        trustworthy enough to walk during retrieval; a confidently wrong one
+        is worse than an honestly missing one.
       </p>
     </div>
   </details>

@@ -79,7 +79,12 @@ an impressive invented one.
   `synthesis.py`, `codeqa ask`. 119 tests green. `codeqa ask` genuinely
   retrieves the Flask multi-hop chain end to end (LLM call mocked via
   litellm's `mock_response` -- no live key in this environment).
-- Everything past Phase 5: not started.
+- **Phase 6 (call-graph extraction): done and reviewed.** `spans.py`,
+  `graph/extraction.py`, `graph/resolve.py`. 150 tests green. Real Flask
+  index produces 1110 call edges (264 exact / 59 approximate / 787
+  unresolved), including the disambiguated `Flask.full_dispatch_request →
+  Flask.dispatch_request` edge (one of three same-named candidates).
+- Everything past Phase 6: not started.
 - **`tree-sitter` is pinned `>=0.25,<0.26`, and this pin is load-bearing.**
   0.26.0 segfaults the interpreter on Python 3.14.2 when reading
   `Node.start_point`/`end_point` during `QueryCursor.matches()` iteration on

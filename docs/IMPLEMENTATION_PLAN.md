@@ -187,7 +187,7 @@ before trusting the fix.
 
 ---
 
-## Phase 6 — Call-graph extraction `[ ]`
+## Phase 6 — Call-graph extraction `[x]`
 
 **Goal:** the differentiator.
 
@@ -201,6 +201,28 @@ deliberately don't attempt (no type inference, no dynamic dispatch).
 
 **Done when:** Flask's `full_dispatch_request → dispatch_request → view` chain
 exists in `call_edges`.
+
+⚠️ **Corrected during the phase, empirically.** The 3-hop chain as originally
+stated is not achievable: `dispatch_request` invokes the view via
+`self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)` — a call
+on the *return value of another call*, not a named symbol. tree-sitter's
+`reference.call` query structurally cannot capture it; this is real dynamic
+dispatch, not a bug. Verified by extracting tags from the actual line and
+confirming only `ensure_sync` is captured, nothing named "view".
+
+✅ *The achievable 2-hop chain is real and correctly resolved:
+`Flask.full_dispatch_request → Flask.dispatch_request`, `resolution='approximate'`
+— correct disambiguation among 3 same-named candidates (`Flask`, `View`,
+`MethodView` all define `dispatch_request`). Full Flask index: 1110 call
+edges — 264 exact, 59 approximate, 787 unresolved. 25 new tests, 150 total
+green.*
+
+**Built:** `spans.py` (containment utility extracted from `chunker.py`,
+now shared with `graph/extraction.py`), `graph/extraction.py` (call-site →
+caller attribution, pure), `graph/resolve.py` (ordered resolution heuristic:
+zero candidates → unresolved; one → exact; same-class → approximate;
+same-file → approximate; otherwise → unresolved, never guessed), integrated
+into `index_repo` as a final repo-wide pass after all chunks are persisted.
 
 ---
 
