@@ -1,4 +1,4 @@
-"""Full index: walk -> chunk -> embed -> persist.
+"""Full index: walk -> chunk -> embed -> persist -> extract call graph.
 
 Embedding is batched across the WHOLE repo, not per file -- measured 3.5x
 throughput from batching (see test_embeddings.py), and most files don't have
@@ -10,6 +10,11 @@ Per-file failures do not abort the run. A repo can contain one file with an
 encoding quirk or a parser edge case tree-sitter chokes on; losing the other
 999 files' worth of indexing to that one file would be a worse failure mode
 than skipping it and recording why.
+
+Call-graph resolution runs as its own pass at the very end, after every
+file's chunks are persisted -- not interleaved into the per-file loop. A
+callee can be defined in a file processed earlier OR later in the walk, so
+resolution genuinely needs the whole repo's chunk set to exist first.
 """
 
 import hashlib
@@ -19,6 +24,8 @@ from pathlib import Path
 
 import psycopg
 
+from codeqa.graph.extraction import extract_call_sites
+from codeqa.graph.resolve import PendingEdge, resolve_and_persist, to_pending_edge
 from codeqa.indexing.chunker import Chunk, chunk_file
 from codeqa.indexing.embeddings import EmbeddingProvider
 from codeqa.indexing.store import (
@@ -29,7 +36,7 @@ from codeqa.indexing.store import (
     upsert_file,
 )
 from codeqa.indexing.walker import walk_repo
-from codeqa.languages import detect_language
+from codeqa.languages import LanguageSpec, detect_language
 
 
 def _blob_sha(content: bytes) -> str:
@@ -54,6 +61,7 @@ class _PendingFile:
     blob_sha: str
     size_bytes: int
     chunks: list[Chunk]
+    spec: LanguageSpec  # kept for call-graph extraction's second parse pass
 
 
 def index_repo(
@@ -91,6 +99,7 @@ def index_repo(
                     blob_sha=_blob_sha(content),
                     size_bytes=len(content),
                     chunks=chunks,
+                    spec=spec,
                 )
             )
         except Exception as exc:  # noqa: BLE001 -- one bad file must not abort the run
@@ -103,6 +112,7 @@ def index_repo(
     all_texts = [c.content for pf in pending for c in pf.chunks]
     all_vectors = embedder.embed(all_texts) if all_texts else []
 
+    pending_edges: list[PendingEdge] = []
     offset = 0
     for pf in pending:
         n = len(pf.chunks)
@@ -113,14 +123,33 @@ def index_repo(
             file_id = upsert_file(
                 conn, repo_id, pf.path, pf.language, pf.tier, pf.blob_sha, pf.size_bytes
             )
-            replace_chunks(conn, repo_id, file_id, pf.chunks, vectors)
+            chunk_ids = replace_chunks(conn, repo_id, file_id, pf.chunks, vectors)
             conn.commit()
             stats.files_indexed += 1
             stats.chunks_created += n
+
+            # Re-read and re-parse for call sites (see module docstring on
+            # this cost). Keyed by object identity, not Chunk equality --
+            # site.caller is the exact object smallest_enclosing selected
+            # from pf.chunks, so id() matching is exact and needs no
+            # assumption about Chunk field-uniqueness.
+            content = (root / pf.path).read_bytes()
+            sites = extract_call_sites(pf.spec, content, pf.chunks)
+            chunk_id_by_identity = {
+                id(chunk): chunk_id for chunk, chunk_id in zip(pf.chunks, chunk_ids, strict=True)
+            }
+            for site in sites:
+                caller_id = chunk_id_by_identity[id(site.caller)]
+                pending_edges.append(to_pending_edge(site, caller_id, file_id))
         except Exception as exc:  # noqa: BLE001 -- see module docstring
             conn.rollback()
             stats.files_failed += 1
             stats.errors.append((pf.path, str(exc)))
+
+    graph_stats = resolve_and_persist(conn, repo_id, pending_edges)
+    stats.call_edges_exact = graph_stats.exact
+    stats.call_edges_approximate = graph_stats.approximate
+    stats.call_edges_unresolved = graph_stats.unresolved
 
     mark_indexed(conn, repo_id)
     stats.duration_seconds = time.perf_counter() - started

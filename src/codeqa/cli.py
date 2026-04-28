@@ -120,6 +120,16 @@ def index(
         f"\n  [green]{stats.files_indexed}[/] files, "
         f"[green]{stats.chunks_created}[/] chunks in {stats.duration_seconds:.1f}s"
     )
+    total_edges = (
+        stats.call_edges_exact + stats.call_edges_approximate + stats.call_edges_unresolved
+    )
+    if total_edges:
+        console.print(
+            f"  [green]{total_edges}[/] call edges: "
+            f"[green]{stats.call_edges_exact}[/] exact, "
+            f"[cyan]{stats.call_edges_approximate}[/] approximate, "
+            f"[dim]{stats.call_edges_unresolved}[/] unresolved"
+        )
     if stats.files_skipped_no_language:
         console.print(f"  [dim]{stats.files_skipped_no_language} skipped (no language)[/]")
     if stats.files_failed:

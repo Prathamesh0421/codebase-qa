@@ -37,6 +37,11 @@ class IndexStats:
     files_skipped_no_language: int = 0
     files_failed: int = 0
     chunks_created: int = 0
+    # Populated by call-graph resolution (Phase 6). See graph/resolve.py for
+    # what each resolution level actually means.
+    call_edges_exact: int = 0
+    call_edges_approximate: int = 0
+    call_edges_unresolved: int = 0
     duration_seconds: float = 0.0
     errors: list[tuple[str, str]] = field(default_factory=list)
 
@@ -140,7 +145,7 @@ def replace_chunks(
     file_id: int,
     chunks: list[Chunk],
     vectors: list[list[float]],
-) -> int:
+) -> list[int]:
     """Delete a file's existing chunks and insert the freshly computed set.
 
     Delete-then-insert rather than a smarter diff: this is the full-index
@@ -148,9 +153,17 @@ def replace_chunks(
     index_repo safely re-runnable -- re-indexing an unchanged repo replaces
     each file's chunks with an identical set rather than duplicating them --
     which matters for tests and for recovering from a partial prior run.
+
+    Returns the inserted ids, positionally matching `chunks` -- Phase 6's
+    call-graph extraction needs a real chunk_id to attribute each call site
+    to its caller, and this is the one place that assigns them. Returned as a
+    plain list rather than a dict keyed by Chunk: Chunk equality is
+    field-based, and nothing here needs to assume two distinct definitions
+    can never produce field-identical Chunk values.
     """
     with conn.cursor() as cur:
         cur.execute("DELETE FROM chunks WHERE repo_id = %s AND file_id = %s", (repo_id, file_id))
+        ids: list[int] = []
         for chunk, vector in zip(chunks, vectors, strict=True):
             cur.execute(
                 """
@@ -158,13 +171,15 @@ def replace_chunks(
                     (repo_id, file_id, kind, symbol_name, qualified_name,
                      start_line, end_line, content, content_sha, embedding)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
                 """,
                 (
                     repo_id, file_id, chunk.kind, chunk.symbol_name, chunk.qualified_name,
                     chunk.start_line, chunk.end_line, chunk.content, chunk.content_sha, vector,
                 ),
             )
-    return len(chunks)
+            ids.append(cur.fetchone()[0])
+    return ids
 
 
 def mark_indexed(conn: psycopg.Connection, repo_id: int, commit_sha: str | None = None) -> None:
