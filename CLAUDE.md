@@ -84,7 +84,11 @@ an impressive invented one.
   index produces 1110 call edges (264 exact / 59 approximate / 787
   unresolved), including the disambiguated `Flask.full_dispatch_request →
   Flask.dispatch_request` edge (one of three same-named candidates).
-- Everything past Phase 6: not started.
+- **Phase 7 (graph traversal): done and reviewed.** `graph/traversal.py`.
+  179 tests green. Differential test (SQL CTE vs real networkx BFS) passes
+  on synthetic cyclic/diamond fixtures AND the real Flask call graph, in
+  both directions, including under `max_nodes` truncation.
+- Everything past Phase 7: not started.
 - **`tree-sitter` is pinned `>=0.25,<0.26`, and this pin is load-bearing.**
   0.26.0 segfaults the interpreter on Python 3.14.2 when reading
   `Node.start_point`/`end_point` during `QueryCursor.matches()` iteration on

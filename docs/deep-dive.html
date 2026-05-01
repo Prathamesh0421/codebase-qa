@@ -796,6 +796,24 @@
   </div>
 
   <div class="decision">
+    <h3>Recursive CTEs enumerate paths, not a BFS tree — and the differential test caught it</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>The mental model going in was "<code>WITH RECURSIVE ... CYCLE</code> is a BFS with built-in cycle safety." That's half right. <code>CYCLE</code> stops a single path from repeating a node it already visited; it says nothing about two <em>independent</em> paths converging on the same node — a diamond shape (<code>a→b→d</code> and <code>a→c→d</code>) isn't a cycle at all, so nothing prevents <code>d</code> from appearing twice.</dd>
+      <dt>How it was found</dt>
+      <dd>Not by reading documentation closely enough — by writing the differential test and having it fail. <code>traverse_sql</code> returned <code>d</code> at depth 2 twice; <code>traverse_networkx</code>, built on <code>networkx</code>'s own shortest-path BFS, returned it once. The disagreement was the signal, not a bug report.</dd>
+      <dt>Decision</dt>
+      <dd><code>SELECT DISTINCT ON (chunk_id) ... ORDER BY chunk_id, depth</code> keeps each node's minimum-depth occurrence. That forces the query's <code>ORDER BY</code> to start with <code>chunk_id</code> rather than <code>depth</code> — so truncation to <code>graph_max_nodes</code> moved out of SQL entirely; the query returns everything reachable, and Python sorts by <code>(depth, chunk_id)</code> and slices, which keeps the <em>closest</em> nodes when truncating rather than an arbitrary chunk-id-ordered subset.</dd>
+      <dt>Verified, not assumed, either direction</dt>
+      <dd><code>EXPLAIN ANALYZE</code> confirmed <code>DISTINCT ON</code> defeats Postgres's early-termination on a wide fan-out (5.4ms vs 0.03ms on a synthetic 5000-edge case — it must fully materialize before it can sort). Accepted rather than engineered around: correctness matters more here, and <code>graph_max_depth</code> (default 2) remains the real bound on database work regardless of width.</dd>
+      <dt class="k-give">Gave up</dt>
+      <dd>The specific optimization verified in the first pass at this query (unordered <code>LIMIT</code> stopping the recursion early). Kept as documented, superseded reasoning in the code rather than deleted — the comment explaining <em>why</em> the first approach doesn't survive contact with correct deduplication is worth more than a clean diff that hides the tradeoff.</dd>
+      <dt class="k-ask">If asked</dt>
+      <dd>"A recursive CTE with a CYCLE clause gives you cycle-safety, not deduplication — those are different guarantees that look similar until a diamond-shaped dependency proves otherwise. I found this because I built an independent second implementation specifically to disagree with the first one if it was wrong, not because I read the semantics carefully enough the first time."</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
     <h3>Call resolution: an ordered heuristic that refuses to guess</h3>
     <dl class="dl-grid">
       <dt>Context</dt>
@@ -1285,6 +1303,45 @@
   approximate, 787 unresolved. The high unresolved count is the honest
   picture, not a shortfall: most calls in a real application reach into
   external libraries with no chunk in the repo's own index at all.</p>
+
+  <h3>Phase 7 — Graph traversal <span class="phase-status done">Done</span></h3>
+  <p>
+    Two implementations of "what's reachable from this chunk, safely" —
+    <code>traverse_sql</code>, one <code>WITH RECURSIVE ... CYCLE</code>
+    query, and <code>traverse_networkx</code>, calling
+    <code>networkx</code>'s own <code>single_source_shortest_path_length</code>
+    rather than a hand-rolled loop dressed up as an independent
+    implementation. <code>networkx</code> stays a lazy import inside the
+    two functions that need it — it's a dev-only dependency, and this
+    module also holds <code>traverse_sql</code>, which Phase 10's trace
+    agent imports into the deployed image.
+  </p>
+
+  <h4>The differential test earned its keep immediately</h4>
+  <p>
+    Two real bugs surfaced before either implementation was trusted, both
+    caught by disagreement between the two, not by inspection. First:
+    <code>CYCLE</code> only detects a node repeating <em>within one
+    path</em> — a diamond shape (<code>a→b→d</code> and <code>a→c→d</code>)
+    isn't a cycle, so nothing stopped <code>d</code> from being returned
+    twice. Second, and easy to miss by symmetry: the callees-direction
+    recursive term selects <code>callee_chunk_id</code>, which is
+    <code>NULL</code> for an unresolved edge — an unfiltered recursion tried
+    to recurse into <code>NULL</code> as if it were a real chunk id. The
+    callers direction didn't need the equivalent filter, because its join
+    condition makes <code>NULL</code> naturally fail to match — which made
+    it easy to assume the same safety carried over to the other direction
+    without checking. It didn't.
+  </p>
+
+  <p><strong>Verification:</strong> 40 new tests, 179 total green. Both
+  implementations agree exactly — on a deliberately cyclic fixture, a
+  diamond-shaped one, one with unresolved edges mixed in, under
+  <code>max_nodes</code> truncation, and on the real Flask call graph in
+  both directions starting from the same ambiguous method Phase 6's
+  resolution heuristic had to disambiguate. A test run that appeared to
+  hang for over 180 seconds turned out to be an unrelated network stall,
+  not a termination bug — see War Stories.</p>
 </section>
 
 <!-- ============================================================ 07 -->
@@ -1482,6 +1539,32 @@
       <dd>The 2-hop chain that remained turned out to be a better test than the original 3-hop one would have been. <code>dispatch_request</code> is defined on three different classes in real Flask, so resolving <code>full_dispatch_request</code>'s call to it correctly requires the same-class heuristic to do real work — a single unambiguous target would have proven nothing about disambiguation at all.</dd>
       <dt>Lesson</dt>
       <dd>A written spec is a hypothesis, not a guarantee — including one written earlier in the same project, by the same reasoning that produced everything else. The discipline that catches a wrong dependency claim or a wrong library assumption applies exactly as well to a target the plan itself set. Checking it costs one grep-sized detour; not checking it costs building the wrong thing and finding out from a failing "done when" bar at the end.</dd>
+    </dl>
+  </div>
+
+  <div class="story">
+    <span class="story-tag trap">The one phase where a hang would have looked like the answer</span>
+    <h3>A network stall in the middle of the termination phase</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>Phase 7's entire subject is proving traversal terminates on a cyclic graph. Running the full test suite after finishing it, the process sat for over 180 seconds with zero output — in any other phase, a slow test. Here, it was the single worst possible moment for something to look like it might not terminate.</dd>
+      <dt>What it was tempting to assume</dt>
+      <dd>That a cycle had slipped past the CYCLE clause or the visited-set logic somewhere, and something was spinning. The traversal code was the newest, most directly relevant suspect in the room.</dd>
+      <dt>What was checked instead of assumed</dt>
+      <dd>
+        Three quick, ordered checks, each one ruling out a specific hypothesis rather than guessing at a fix:
+        <ul>
+          <li><code>pg_stat_activity</code> on the actual Postgres connection — <code>state=idle</code>, <code>wait_event_type=Client</code>, sitting on a completed <code>COMMIT</code>. The server was not blocked on a query; it was waiting for the client to say anything at all.</li>
+          <li><code>ps</code> on the Python process — <strong>0% CPU</strong>. Not spinning, not computing, not stuck in a loop. A real infinite loop burns CPU; this wasn't one.</li>
+          <li><code>lsof</code> on the process's open connections — one established HTTPS connection to a CloudFront edge node. Not Postgres. A CDN.</li>
+        </ul>
+      </dd>
+      <dt>Root cause</dt>
+      <dd>Sentence-transformers checks Hugging Face Hub for a fresher version of the model on construction, even when a valid local copy is already cached. That network call stalled. Nothing about the call graph, the CYCLE clause, or the differential test was involved.</dd>
+      <dt>Fix, deliberately narrow</dt>
+      <dd><code>HF_HUB_OFFLINE=1</code> makes it skip the check and use the cache directly — confirmed working in under a second once set. Not added to test configuration or CI defaults: forcing offline mode unconditionally would make a fresh checkout with no cached model fail outright instead of slowly succeeding, trading a slow first run for a broken one. Documented as local guidance instead, for once the cache already exists.</dd>
+      <dt>Lesson</dt>
+      <dd>The context of a bug shapes which explanation feels obvious, and that pull is exactly when a stepwise elimination check matters most — a hang during the termination phase reads as a termination bug until you've actually looked, and looking took three commands and about a minute against a "just add a timeout and move on" instinct that would have proven nothing about whether the code was actually correct.</dd>
     </dl>
   </div>
 </section>
@@ -1714,6 +1797,33 @@
         flagged that a long-running indexing worker parsing many languages
         sequentially is the same shape of workload, so it's worth revisiting
         when that worker gets built.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why do you need two implementations of traversal instead of just testing the SQL directly?</summary>
+    <div class="answer">
+      <p>
+        Because testing the SQL directly against hand-written expected
+        output only catches the gap between the SQL and <em>my own mental
+        model</em> of what it should do — and that mental model was
+        wrong twice in this phase. I assumed <code>CYCLE</code> gave full
+        deduplication; it only prevents a single path from repeating a
+        node. I assumed the NULL-safety I'd verified for one traversal
+        direction applied symmetrically to the other; it didn't. A
+        hand-written expected-output test would have encoded the same
+        wrong assumptions into the test as into the code, and passed.
+      </p>
+      <p>
+        A second, independently implemented traversal — real
+        <code>networkx</code>, not a second copy of my own loop — can be
+        wrong in <em>different</em> ways than the first one. When they
+        disagree, that's real signal. Both bugs here were found exactly
+        that way: the SQL version returned one result, the networkx
+        version returned a different one, and the disagreement is what
+        sent me back to figure out which one was actually correct — which
+        in both cases was networkx, and the SQL got fixed to match.
       </p>
     </div>
   </details>

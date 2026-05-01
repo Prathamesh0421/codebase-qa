@@ -226,7 +226,7 @@ into `index_repo` as a final repo-wide pass after all chunks are persisted.
 
 ---
 
-## Phase 7 — Graph traversal `[ ]`
+## Phase 7 — Graph traversal `[x]`
 
 **Goal:** walk the graph safely.
 
@@ -242,6 +242,39 @@ technique.
 
 **Done when:** traversal terminates on a deliberately cyclic fixture, and both
 implementations agree.
+
+✅ *Terminates on a deliberate 3-cycle; both implementations agree exactly —
+on synthetic fixtures (cyclic, diamond-shaped, depth-bounded, with unresolved
+edges present), under `max_nodes` truncation, AND on the real Flask call
+graph in both directions. 40 new tests, 179 total green.*
+
+**Built:** `graph/traversal.py` — `traverse_sql` (one `WITH RECURSIVE ...
+CYCLE` query, `DISTINCT ON` for cross-path deduplication, sorted+truncated
+in Python) and `traverse_networkx` (real `networkx.single_source_shortest_
+path_length`, not a hand-rolled loop dressed up as a second implementation;
+networkx stays a lazy import so production never requires it).
+
+**The differential test found two real bugs before either implementation
+was trusted:**
+1. `CYCLE` only detects a node repeating *within one path* — it does not
+   deduplicate a node reached via two independent paths (a diamond:
+   `a→b→d` and `a→c→d`). Inherent to how recursive CTEs enumerate simple
+   paths, not a bug in the query specifically. Fixed with `DISTINCT ON`.
+2. The callees-direction recursive term selected `callee_chunk_id`, which
+   is `NULL` for an unresolved edge — recursing into `NULL` as if it were a
+   real chunk id. Needed an explicit `IS NOT NULL` filter that the callers
+   direction didn't (there, `NULL = x` is never true in SQL, so the join
+   condition excludes it for free — an asymmetry easy to miss by reasoning
+   about one direction and assuming the other is safe by the same logic).
+
+**A test run appeared to hang** — 180s+, zero output. Diagnosed by ruling
+things out rather than guessing: Postgres showed the connection `idle`,
+waiting on the *client*, not blocked server-side; the Python process was at
+0% CPU, not computing; `lsof` found an established connection to a
+CloudFront CDN — HuggingFace Hub's freshness check on `SentenceTransformer`
+construction, stalled on the network, unrelated to any traversal code. Not
+forced into test infrastructure as a blind fix (`HF_HUB_OFFLINE=1` would
+break a cold-cache CI runner), documented as guidance instead.
 
 ---
 
