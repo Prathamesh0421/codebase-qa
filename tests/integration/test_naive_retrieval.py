@@ -16,6 +16,7 @@ from pgvector.psycopg import register_vector
 from codeqa.indexing.embeddings import LocalEmbedder
 from codeqa.indexing.pipeline import index_repo
 from codeqa.indexing.store import register_repo
+from codeqa.retrieval.hybrid import HybridGraphStrategy, HybridStrategy
 from codeqa.retrieval.naive import NaiveStrategy
 from codeqa.retrieval.strategy import get_strategy
 
@@ -144,13 +145,22 @@ class TestGetStrategy:
     def test_naive_returns_naive_strategy(self):
         assert isinstance(get_strategy("naive"), NaiveStrategy)
 
-    def test_hybrid_not_yet_implemented(self):
-        with pytest.raises(NotImplementedError, match="Phase 8"):
-            get_strategy("hybrid")
+    def test_hybrid_returns_hybrid_strategy(self):
+        assert isinstance(get_strategy("hybrid"), HybridStrategy)
 
-    def test_hybrid_graph_not_yet_implemented(self):
-        with pytest.raises(NotImplementedError, match="Phase 8"):
-            get_strategy("hybrid_graph")
+    def test_hybrid_graph_returns_hybrid_graph_strategy(self):
+        strategy = get_strategy("hybrid_graph")
+        assert isinstance(strategy, HybridGraphStrategy)
+
+    def test_hybrid_graph_threads_through_explicit_graph_params(self):
+        # Not Settings-shaped -- constructor args only, same convention as
+        # build_embedder. Reached into the instance's own attributes rather
+        # than asserting on behavior, since a wrong default silently
+        # producing a plausible-looking result is exactly the failure mode
+        # worth catching here.
+        strategy = get_strategy("hybrid_graph", graph_max_depth=5, graph_max_nodes=99)
+        assert strategy._max_depth == 5
+        assert strategy._max_nodes == 99
 
     def test_unknown_strategy_raises(self):
         with pytest.raises(ValueError, match="unknown retrieval strategy"):

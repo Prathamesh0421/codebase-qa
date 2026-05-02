@@ -105,6 +105,28 @@ class TestAskCommand:
         assert "greeter.py:1-3" in result.output
         assert "greet" in result.output
 
+    @pytest.mark.parametrize("strategy_name", ["naive", "hybrid", "hybrid_graph"])
+    def test_all_three_strategies_are_selectable_purely_via_config(
+        self, indexed_repo, monkeypatch, strategy_name
+    ):
+        # config.retrieval_strategy is the only place this decision is meant
+        # to be made (see strategy.py's docstring) -- this drives that exact
+        # path, CODEQA_RETRIEVAL_STRATEGY env var through get_settings()
+        # through get_strategy(), for all three strategies against the same
+        # repo and question, rather than constructing strategy classes
+        # directly like test_hybrid_retrieval.py does.
+        monkeypatch.setenv("CODEQA_RETRIEVAL_STRATEGY", strategy_name)
+        runner = CliRunner()
+
+        with _mocked_llm("Greets a user by name, citing greeter.py:1-3."):
+            result = runner.invoke(
+                app, ["ask", "how does greeting work?", "--repo", "greeter"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Greets a user by name" in result.output
+        assert "greeter.py:1-3" in result.output
+
     def test_unknown_repo_slug_fails_clearly(self, monkeypatch):
         monkeypatch.setenv("CODEQA_RETRIEVAL_STRATEGY", "naive")
         runner = CliRunner()

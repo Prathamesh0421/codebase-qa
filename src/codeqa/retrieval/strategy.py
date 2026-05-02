@@ -32,9 +32,22 @@ class RetrievedChunk:
     start_line: int
     end_line: int
     content: str
-    # Meaning varies by strategy: cosine similarity for naive/hybrid's dense
-    # component, an RRF-fused score once Phase 8 lands. Always higher-is-better.
+    # Meaning varies by strategy: cosine similarity for naive, an RRF-fused
+    # score for hybrid/hybrid_graph. Always higher-is-better within one
+    # strategy's own results, never comparable across strategies.
     score: float
+    # Which retrieval mechanism(s) produced this chunk: any combination of
+    # "vector", "lexical", "symbol" joined with "+", or "graph" (optionally
+    # ALSO joined with one of those three, when a chunk that graph
+    # expansion surfaced also sat in another component's candidate pool
+    # without surviving that component's own fusion into top_k -- see
+    # HybridGraphStrategy.retrieve). No default -- every strategy must say
+    # explicitly what it means, not silently inherit "vector" when it might
+    # not be true. Not cosmetic: Phase 9's eval harness needs this to answer
+    # the project's central question -- does call-graph expansion find
+    # chunks nothing else comes close to -- by checking whether a correct
+    # chunk's source is EXACTLY "graph", with no other component appended.
+    source: str
 
     @property
     def citation(self) -> str:
@@ -65,16 +78,30 @@ class RetrievalStrategy(Protocol):
         ...
 
 
-def get_strategy(name: str) -> RetrievalStrategy:
+def get_strategy(
+    name: str, graph_max_depth: int = 2, graph_max_nodes: int = 40
+) -> RetrievalStrategy:
     """Select a strategy by name -- config.retrieval_strategy is the only
     place this decision gets made. An unimplemented strategy fails loudly
-    with the phase that adds it, not silently falling back to naive."""
+    with the phase that adds it, not silently falling back to naive.
+
+    graph_max_depth/graph_max_nodes are only meaningful for hybrid_graph and
+    ignored otherwise -- passed as explicit parameters rather than a Settings
+    object, matching build_embedder's convention, so this factory (and
+    HybridGraphStrategy itself) can be constructed and tested without a
+    config file. Defaults mirror config.py's so callers that don't care about
+    graph tuning can omit them.
+    """
     if name == "naive":
         from codeqa.retrieval.naive import NaiveStrategy
 
         return NaiveStrategy()
     if name == "hybrid":
-        raise NotImplementedError("hybrid retrieval arrives in Phase 8")
+        from codeqa.retrieval.hybrid import HybridStrategy
+
+        return HybridStrategy()
     if name == "hybrid_graph":
-        raise NotImplementedError("call-graph expansion arrives in Phase 8")
+        from codeqa.retrieval.hybrid import HybridGraphStrategy
+
+        return HybridGraphStrategy(graph_max_depth=graph_max_depth, graph_max_nodes=graph_max_nodes)
     raise ValueError(f"unknown retrieval strategy: {name!r}")

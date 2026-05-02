@@ -170,7 +170,11 @@ def ask(
             settings.embedding_provider, embedding_model, embedding_dim,
             settings.embedding_batch_size, settings.embedding_api_key,
         )
-        strategy = get_strategy(settings.retrieval_strategy)
+        strategy = get_strategy(
+            settings.retrieval_strategy,
+            graph_max_depth=settings.graph_max_depth,
+            graph_max_nodes=settings.graph_max_nodes,
+        )
         chunks = strategy.retrieve(conn, repo_id, question, embedder, top_k)
     finally:
         conn.close()

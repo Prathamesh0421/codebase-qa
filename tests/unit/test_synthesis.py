@@ -29,6 +29,7 @@ def make_chunk(**overrides) -> RetrievedChunk:
         end_line=994,
         content="def dispatch_request(self, ctx):\n    ...",
         score=0.87,
+        source="vector",
     )
     return RetrievedChunk(**{**defaults, **overrides})
 

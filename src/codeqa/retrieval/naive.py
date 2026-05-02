@@ -55,6 +55,7 @@ class NaiveStrategy:
                 end_line=row[6],
                 content=row[7],
                 score=row[8],
+                source="vector",
             )
             for row in rows
         ]
