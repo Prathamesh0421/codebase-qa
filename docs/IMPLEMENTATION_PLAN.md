@@ -278,7 +278,7 @@ break a cold-cache CI runner), documented as guidance instead.
 
 ---
 
-## Phase 8 — Hybrid retrieval and fusion `[ ]`
+## Phase 8 — Hybrid retrieval and fusion `[x]`
 
 **Goal:** the full retrieval stack, swappable.
 
@@ -291,6 +291,42 @@ semantic); how RRF fuses ranked lists without tuning score scales; the
 context-window budget that caps expansion.
 
 **Done when:** all three strategies run against the same query via config.
+
+✅ *All three run against Flask via `codeqa ask --repo flask` with
+`CODEQA_RETRIEVAL_STRATEGY` swapped, and via `get_strategy()` directly. 24 new
+tests, 217 total green.*
+
+**Built:** `retrieval/fusion.py` (`reciprocal_rank_fusion` + identifier
+extraction), `retrieval/hybrid.py` (`HybridStrategy`, `HybridGraphStrategy`),
+`get_strategy()` now constructs real instances instead of raising.
+
+**Found two real bugs by running against Flask, not the hand-built fixture**
+(caught by the advisor review, not by inspection):
+
+1. Bare-token symbol matching had no shape filter, so ordinary English words
+   in a question ("Flask", "view", "request") matched real `symbol_name`s and
+   let a giant, barely-relevant chunk (the entire 1500-line `Flask` class)
+   outrank the actual answer in RRF fusion. Fixed with `filter_symbol_
+   candidates` — shape-based (`_` or an internal capital), not a stopword
+   list, since a stopword list can't tell "Flask" the framework from "flask"
+   the noun but token shape naturally does.
+2. First attempt at labeling graph-expanded chunks excluded anything already
+   in ANY component's candidate pool — which silently *dropped*
+   `Flask.dispatch_request` from `hybrid_graph`'s results entirely (it was in
+   vector's pool, just not the fused top-k). Fixed by keeping expansion
+   inclusive and instead labeling precisely: `source` is `"graph"` alone only
+   when no other component's pool contained the chunk at all, `"graph+
+   vector"` etc. otherwise — the distinction Phase 9 actually needs.
+
+**A test's false premise was itself informative:** the first version of the
+graph-expansion test assumed a one-hop caller would be unreachable by lexical
+search alone. It isn't — a caller's source text necessarily contains the
+callee's literal name (`process_incoming_login_form`'s body contains the
+string `check_password_hash`), so full-text search over raw source code finds
+one-hop callers on its own. What graph expansion actually adds is context
+beyond a size-bounded top-k, not access to otherwise-invisible chunks — a
+narrower, more honest claim than initially assumed, and the one now written
+into the tests and docs.
 
 ---
 

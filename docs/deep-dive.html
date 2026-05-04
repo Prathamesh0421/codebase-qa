@@ -912,6 +912,36 @@
   </div>
 
   <div class="decision">
+    <h3>Symbol matching filters by token shape, not a stopword list</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>The symbol component of hybrid retrieval matches bare tokens extracted from the raw query text against real <code>symbol_name</code>s, exact match, no fuzziness.</dd>
+      <dt>Problem</dt>
+      <dd>Found running against real Flask, not the hand-built fixture: ordinary English words in a question are frequently <em>also</em> real symbol names in real code. "Flask", "view", and "request" are a class and two methods in Flask's own source — unfiltered, the entire 1500-line <code>Flask</code> class chunk won an exact match and outranked the actual answer in RRF fusion.</dd>
+      <dt>Decision</dt>
+      <dd><code>filter_symbol_candidates</code> keeps a bare token only if it contains an underscore or an internal (non-first-character) capital letter — <code>dispatch_request</code> and <code>SessionManager</code> qualify, "flask" and "view" don't. Shape, not a hand-maintained word list.</dd>
+      <dt class="k-give">Gave up</dt>
+      <dd>Exact-match boost for a real symbol that happens to be a single, all-lowercase word (a function actually named <code>dispatch</code>, say). Accepted: there's no shape-based way to distinguish that from the English verb, and false positives from ordinary words are the more damaging failure of the two.</dd>
+      <dt class="k-ask">If asked</dt>
+      <dd>"Why not a stopword list? Because it can't tell 'Flask' the framework's class name from 'flask' the container — dictionary membership doesn't encode that distinction, but how the identifier is <em>written</em> does. A stopword list would also need constant upkeep as new false positives turned up; shape-gating doesn't."</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>Graph-expanded chunks keep their pool membership in the label, not just "graph"</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd><code>HybridGraphStrategy</code> expands beyond hybrid's fused top-k by walking the call graph from every primary result, and labels what it adds <code>source="graph"</code> so Phase 9's eval can tell what call-graph expansion is actually contributing.</dd>
+      <dt>Problem</dt>
+      <dd>The first version excluded any chunk already present in <em>any</em> component's candidate pool from graph expansion entirely — reasoning that if vector/lexical/symbol search already knew about it, graph didn't "find" it. Verified against real Flask that this was wrong in a worse way than the labeling imprecision it fixed: <code>Flask.dispatch_request</code> was ranked #10 by raw vector similarity (inside vector's own candidate pool) but pushed out of the <em>fused</em> top-k by chunks that matched multiple components — so excluding pool members silently dropped it from <code>hybrid_graph</code>'s results altogether, both not-primary and not-graph.</dd>
+      <dt>Decision</dt>
+      <dd>Keep expansion inclusive of anything not already a primary result. Label precisely instead: <code>source</code> is <code>"graph"</code> alone only when no component's pool contained the chunk at all; <code>"graph+vector"</code> etc. when it did, just not highly enough to survive that component's own fusion into top-k.</dd>
+      <dt class="k-ask">If asked</dt>
+      <dd>"A chunk a component's pool touched but didn't rank into the final answer is still real information worth surfacing — what it doesn't deserve is being credited to the wrong mechanism. Phase 9 reads <code>source == "graph"</code> exactly as 'nothing else came close,' and getting that string precisely right is the whole point of carrying it at all."</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
     <h3>Local <em>and</em> hosted embeddings behind one interface</h3>
     <dl class="dl-grid">
       <dt>Context</dt>
@@ -1342,6 +1372,51 @@
   resolution heuristic had to disambiguate. A test run that appeared to
   hang for over 180 seconds turned out to be an unrelated network stall,
   not a termination bug — see War Stories.</p>
+
+  <h3>Phase 8 — Hybrid retrieval and fusion <span class="phase-status done">Done</span></h3>
+  <p>
+    Three independently-ranked candidate lists per query — dense cosine
+    similarity, <code>ts_rank</code> full-text, and an exact match against
+    <code>symbol_name</code>/<code>qualified_name</code> — combined by
+    Reciprocal Rank Fusion into <code>HybridStrategy</code>.
+    <code>HybridGraphStrategy</code> wraps it and walks Phase 7's traversal
+    outward from every primary result, both directions, to pull in
+    call-graph neighbors the fused ranking alone wouldn't have surfaced.
+    <code>get_strategy()</code> now constructs real instances for all three
+    modes instead of raising — the interface built in Phase 5 finally has
+    its other two implementations.
+  </p>
+
+  <h4>The hand-built fixture passed. The real repo didn't.</h4>
+  <p>
+    Every unit and small-fixture integration test was green before this was
+    ever run against Flask. Running it anyway — the same discipline applied
+    in every phase so far — surfaced two real bugs a five-function synthetic
+    repo was structurally too small to expose. First: the query "how does
+    Flask dispatch a request to a view function?" contains the bare word
+    "Flask", which is <em>also</em> the real <code>symbol_name</code> of
+    Flask's entire 1500-line class definition. An unfiltered exact-symbol
+    component matched it, and that giant, barely-relevant chunk outranked
+    the actual answer (<code>Flask.dispatch_request</code>) in the fused
+    result. Second, fixing that surfaced a subtler issue in
+    <code>HybridGraphStrategy</code>'s own bookkeeping: chunks already
+    sitting in a component's candidate pool (just below the fused top-k
+    cutoff) were being silently dropped from graph expansion's output
+    entirely, rather than correctly relabeled. Both are written up in
+    Decisions and War Stories below, since the fixes and the reasoning
+    behind them are more interesting than the phase's original plan.
+  </p>
+
+  <p><strong>Verification:</strong> 24 new tests, 217 total green, including
+  a dedicated regression class against the real Flask fixture
+  (<code>TestFlaskFixtureHybridRetrieval</code>) that pins both fixes down
+  by name so neither can silently regress. All three strategies verified
+  runnable against the same question via <code>codeqa ask</code> with
+  <code>CODEQA_RETRIEVAL_STRATEGY</code> swapped, and <code>hybrid_graph</code>
+  confirmed to recover <code>Flask.dispatch_request</code> — labeled
+  <code>"graph+vector"</code>, not bare <code>"graph"</code>, since vector
+  search's own candidate pool had already found it too, just not highly
+  enough to survive into hybrid's fused top-k.</p>
 </section>
 
 <!-- ============================================================ 07 -->
@@ -1567,6 +1642,25 @@
       <dd>The context of a bug shapes which explanation feels obvious, and that pull is exactly when a stepwise elimination check matters most — a hang during the termination phase reads as a termination bug until you've actually looked, and looking took three commands and about a minute against a "just add a timeout and move on" instinct that would have proven nothing about whether the code was actually correct.</dd>
     </dl>
   </div>
+
+  <div class="story">
+    <span class="story-tag">The fix was wrong the first time, and the second attempt is the one that shipped</span>
+    <h3>Filtering symbol matches fixed one bug and briefly caused a worse one</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>Every hybrid-retrieval test — unit tests, a purpose-built four-file fixture repo — was green before running the same query against real Flask: "how does Flask dispatch a request to a view function?"</dd>
+      <dt>Symptom</dt>
+      <dd>Hybrid's top result was the entire <code>Flask</code> class — 1500-plus lines, one chunk — not <code>Flask.dispatch_request</code>. The word "Flask" in the query is also that class's exact <code>symbol_name</code>, and the unfiltered symbol component let that match win in fusion.</dd>
+      <dt>First fix, and what it broke</dt>
+      <dd>Added shape-based filtering (<code>filter_symbol_candidates</code>) so ordinary words like "Flask" stop qualifying as symbol candidates — correct, and confirmed the giant class chunk no longer won a bare match. But the same investigation had also produced a second change: excluding any chunk already present in <em>any</em> component's candidate pool from graph expansion, on the reasoning that vector/lexical/symbol search "already found it" so graph shouldn't take credit. Re-running the exact same Flask query after both changes showed <code>Flask.dispatch_request</code> — the actual answer — missing from the output <em>entirely</em>, not just unlabeled. It ranked #10 by raw vector similarity (inside vector's pool) but lower in the RRF-fused top-k, so it was excluded from graph expansion as "already found" while never having survived into the primary result either.</dd>
+      <dt>Root cause of the second bug</dt>
+      <dd>Conflating two different questions: "should this chunk be relabeled so graph doesn't wrongly take sole credit for it" and "should this chunk be excluded from the output." A component's candidate <em>pool</em> (deliberately larger than top-k, so RRF has enough to fuse from) is not the same thing as what that component actually surfaced to the user — pool membership is real signal, but silently dropping a chunk because of it throws away useful context the query legitimately deserved.</dd>
+      <dt>Fix</dt>
+      <dd>Keep graph expansion inclusive of everything not already a primary result. Label precisely instead of excluding: <code>source</code> is exactly <code>"graph"</code> only when no component's pool touched the chunk at all, and <code>"graph+vector"</code> (etc.) when it did. Re-verified against the same Flask query: <code>Flask.dispatch_request</code> reappears, correctly labeled <code>"graph+vector"</code>.</dd>
+      <dt>Lesson</dt>
+      <dd>A fix produced under time pressure to close one finding deserves the same "run it for real before trusting it" discipline as the original code — verifying the fix against the same real-repo query that exposed the first bug is what caught the second one, not a second round of reasoning about the code in the abstract. It also reframed what the <code>source</code> field is for: not "which single mechanism gets credit," but "what did every mechanism actually see," which turned out to be the more honest and more useful question for Phase 9 to ask.</dd>
+    </dl>
+  </div>
 </section>
 
 <!-- ============================================================ 08 -->
@@ -1647,6 +1741,59 @@
         <code>ts_rank</code> has no fixed range. Weighting them requires
         constants with no principled basis that you'd retune whenever either
         component changed. Ranks are comparable by construction.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why filter symbol candidates by token shape instead of a stopword list?</summary>
+    <div class="answer">
+      <p>
+        Found running hybrid retrieval against the real Flask repo, not the
+        small hand-built fixture: ordinary English words in a question are
+        frequently also real symbol names. "Flask", "view", and "request" are
+        a class and two methods in Flask's own source. Unfiltered, the entire
+        1500-line <code>Flask</code> class chunk won an exact bare-symbol
+        match and outranked the actual answer in fusion.
+      </p>
+      <p>
+        A stopword list can't fix this — it can't tell "Flask" the class from
+        "flask" the container, and it needs constant upkeep as new false
+        positives turn up in new repos. Token <em>shape</em> can: an
+        underscore or an internal capital letter (<code>dispatch_request</code>,
+        <code>SessionManager</code>) is real evidence a token is meant as an
+        identifier; plain lowercase English words aren't. The cost is a real
+        symbol name that's a single lowercase word losing its exact-match
+        boost — accepted, since there's no shape-based way to tell that from
+        an ordinary word, and false positives from common words are the worse
+        failure of the two.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>What exactly does a chunk's <code>source</code> field mean, and why does the exact string matter?</summary>
+    <div class="answer">
+      <p>
+        It records which mechanism(s) produced a chunk: any combination of
+        <code>"vector"</code>, <code>"lexical"</code>, <code>"symbol"</code>
+        joined with <code>+</code>, or <code>"graph"</code> — optionally also
+        joined with one of the other three, when call-graph expansion
+        surfaced a chunk that some component's candidate pool had also
+        touched without it surviving that component's own fusion into top-k.
+      </p>
+      <p>
+        The exact string matters because Phase 9's eval reads
+        <code>source == "graph"</code> literally to mean "no other mechanism
+        came close" — the central measurement this project exists to make.
+        An earlier version conflated "another component's pool touched this"
+        with "exclude it from graph expansion entirely," which silently
+        dropped a correct answer (<code>Flask.dispatch_request</code>) from
+        the results. The fix keeps expansion inclusive and puts the
+        precision in the label instead: <code>"graph"</code> alone versus
+        <code>"graph+vector"</code> are different, honest claims, and only
+        the first one is evidence the call graph found something nothing
+        else would have.
       </p>
     </div>
   </details>
@@ -2085,6 +2232,8 @@
     <li><strong>Grounding verifies citations, not claims.</strong> It proves cited code exists and was retrieved, not that the sentence describing it is correct.</li>
     <li><strong>English text-search config on source code.</strong> Stemming identifiers with English rules is a compromise; whether <code>simple</code> does better is a measurable question the eval harness can settle.</li>
     <li><strong>Tier 2 and 3 languages get degraded call graphs</strong> — approximate or absent. Declared per language rather than silently applied.</li>
+    <li><strong>Symbol matching misses single-word, all-lowercase identifiers.</strong> Shape-based filtering (an underscore or internal capital required) can't distinguish a real function named e.g. <code>dispatch</code> from the English verb, so it doesn't get the exact-match boost. A deliberate tradeoff against the worse failure — common words polluting matches — not an oversight.</li>
+    <li><strong>Chunk granularity affects lexical recall in a way retrieval can't fix.</strong> A whole-class chunk (Flask's <code>Flask</code> class is 1500-plus lines, one chunk) can lexically match many unrelated query terms just by containing them somewhere in its body. Retrieval-layer filtering narrows this; it doesn't eliminate it. A chunking-granularity question, out of this phase's scope.</li>
     <li><strong>No numbers claimed until measured.</strong> No precision@k or latency figure goes in the README or on a résumé before the harness produces it. A modest measured number is defensible; an impressive invented one collapses on the second question.</li>
   </ul>
 </section>

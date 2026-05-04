@@ -88,7 +88,14 @@ an impressive invented one.
   179 tests green. Differential test (SQL CTE vs real networkx BFS) passes
   on synthetic cyclic/diamond fixtures AND the real Flask call graph, in
   both directions, including under `max_nodes` truncation.
-- Everything past Phase 7: not started.
+- **Phase 8 (hybrid retrieval + fusion): done and reviewed.**
+  `retrieval/fusion.py`, `retrieval/hybrid.py`. 217 tests green. All three
+  strategies (`naive`/`hybrid`/`hybrid_graph`) run against Flask via
+  `get_strategy()` and `codeqa ask`. Two real regressions found by testing
+  against the real Flask fixture instead of only a hand-built one, both
+  fixed and pinned by tests — see "Bare symbol matching" and "Graph-label
+  precision" below.
+- Everything past Phase 8: not started.
 - **`tree-sitter` is pinned `>=0.25,<0.26`, and this pin is load-bearing.**
   0.26.0 segfaults the interpreter on Python 3.14.2 when reading
   `Node.start_point`/`end_point` during `QueryCursor.matches()` iteration on
@@ -164,6 +171,31 @@ Departures from the design doc, all agreed during review:
 - **Lexical retrieval via `tsvector`, not just exact symbols.** Identifiers are
   lexical, not semantic; dense-only retrieval is weak on them. Postgres
   full-text search lives in the same table as the vectors, so fusion is a join.
+
+- **Bare symbol matching is shape-gated, not stopword-gated.** Found by
+  running hybrid retrieval against real Flask, not the hand-built fixture:
+  "Flask", "view", and "request" are ordinary words in a question AND real
+  `symbol_name`s (a class, two methods), so an unfiltered exact-match
+  component let the entire 1500-line `Flask` class chunk outrank the actual
+  answer in RRF fusion. `filter_symbol_candidates` (`retrieval/fusion.py`)
+  requires an underscore or an internal capital letter before a bare token is
+  sent to the database as a symbol candidate — token *shape*, not a
+  hand-maintained word list, since shape is what actually distinguishes
+  `dispatch_request` from "dispatch" the English verb. Cost: a real
+  single-word, all-lowercase symbol name loses its exact-match boost;
+  accepted, since false positives from common words are the worse failure.
+
+- **Graph-expanded chunks are labeled precisely, not just excluded.** First
+  version of `HybridGraphStrategy` excluded any chunk already present in
+  ANY component's candidate pool from graph expansion — which silently
+  *dropped* `Flask.dispatch_request` from the results entirely (it was in
+  vector's pool, just below the fused top-k cutoff, so it wasn't primary
+  output either). Fixed by keeping expansion inclusive and labeling
+  `source` precisely instead: `"graph"` alone only when no other component's
+  pool contained the chunk at all, `"graph+vector"` etc. otherwise. Phase
+  9's eval needs the *exact* string `"graph"` to mean "found only by walking
+  the call graph" — anything looser overstates what graph expansion
+  contributed.
 
 - **Local + hosted embeddings behind one interface.** Local
   (`sentence-transformers`) for dev/CI/evals — free, reproducible, no rate
