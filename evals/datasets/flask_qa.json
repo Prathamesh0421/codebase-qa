@@ -1,0 +1,194 @@
+[
+  {
+    "id": "wsgi-app",
+    "question": "What does Flask's wsgi_app method do?",
+    "gold": [
+      {"file": "app.py", "symbol": "Flask.wsgi_app"}
+    ]
+  },
+  {
+    "id": "flashed-messages",
+    "question": "What does get_flashed_messages do?",
+    "gold": [
+      {"file": "helpers.py", "symbol": "get_flashed_messages"}
+    ]
+  },
+  {
+    "id": "async-wrapping",
+    "question": "How does Flask decide whether an async view function needs to be wrapped so it can run in a synchronous WSGI worker?",
+    "gold": [
+      {"file": "app.py", "symbol": "Flask.ensure_sync"},
+      {"file": "app.py", "symbol": "Flask.async_to_sync"}
+    ]
+  },
+  {
+    "id": "session-signature",
+    "question": "How does Flask verify that a session cookie's signature hasn't been tampered with?",
+    "gold": [
+      {"file": "sessions.py", "symbol": "SecureCookieSessionInterface.open_session"},
+      {"file": "sessions.py", "symbol": "SecureCookieSessionInterface.get_signing_serializer"}
+    ]
+  },
+  {
+    "id": "request-lifecycle",
+    "question": "What happens between Flask's WSGI entry point receiving a request and finalizing the HTTP response, including how exceptions raised during dispatch are handled?",
+    "gold": [
+      {"file": "app.py", "symbol": "Flask.wsgi_app"},
+      {"file": "app.py", "symbol": "Flask.full_dispatch_request"},
+      {"file": "app.py", "symbol": "Flask.preprocess_request"},
+      {"file": "app.py", "symbol": "Flask.dispatch_request"},
+      {"file": "app.py", "symbol": "Flask.handle_user_exception"},
+      {"file": "app.py", "symbol": "Flask.finalize_request"},
+      {"file": "app.py", "symbol": "Flask.make_response"},
+      {"file": "app.py", "symbol": "Flask.process_response"}
+    ]
+  },
+  {
+    "id": "redirect-url",
+    "question": "How does Flask redirect a client to a different URL?",
+    "gold": [
+      {"file": "helpers.py", "symbol": "redirect"}
+    ]
+  },
+  {
+    "id": "abort-http-error",
+    "question": "How does Flask abort request handling with an HTTP error status code?",
+    "gold": [
+      {"file": "helpers.py", "symbol": "abort"}
+    ]
+  },
+  {
+    "id": "debug-flag",
+    "question": "How does Flask check whether debug mode is enabled from environment variables?",
+    "gold": [
+      {"file": "helpers.py", "symbol": "get_debug_flag"}
+    ]
+  },
+  {
+    "id": "blueprint-static-file",
+    "question": "How does a Blueprint serve a static file from the filesystem?",
+    "gold": [
+      {"file": "blueprints.py", "symbol": "Blueprint.send_static_file"}
+    ]
+  },
+  {
+    "id": "root-path",
+    "question": "How does Flask determine the root path of an imported package?",
+    "gold": [
+      {"file": "helpers.py", "symbol": "get_root_path"}
+    ]
+  },
+  {
+    "id": "flash-lexical",
+    "question": "What does the flash function do?",
+    "gold": [
+      {"file": "helpers.py", "symbol": "flash"}
+    ]
+  },
+  {
+    "id": "has-request-context",
+    "question": "What does has_request_context do?",
+    "gold": [
+      {"file": "ctx.py", "symbol": "has_request_context"}
+    ]
+  },
+  {
+    "id": "copy-request-context",
+    "question": "What does copy_current_request_context do?",
+    "gold": [
+      {"file": "ctx.py", "symbol": "copy_current_request_context"}
+    ]
+  },
+  {
+    "id": "has-app-context",
+    "question": "What does has_app_context do?",
+    "gold": [
+      {"file": "ctx.py", "symbol": "has_app_context"}
+    ]
+  },
+  {
+    "id": "get-load-dotenv",
+    "question": "What does get_load_dotenv do?",
+    "gold": [
+      {"file": "helpers.py", "symbol": "get_load_dotenv"}
+    ]
+  },
+  {
+    "id": "appctx-globals-setdefault",
+    "question": "What does _AppCtxGlobals.setdefault do?",
+    "gold": [
+      {"file": "ctx.py", "symbol": "_AppCtxGlobals.setdefault"}
+    ]
+  },
+  {
+    "id": "push-context",
+    "question": "What happens when a request context is pushed and becomes the active context, including session loading and URL routing?",
+    "gold": [
+      {"file": "ctx.py", "symbol": "AppContext.push"},
+      {"file": "ctx.py", "symbol": "AppContext._get_session"},
+      {"file": "ctx.py", "symbol": "AppContext.match_request"}
+    ]
+  },
+  {
+    "id": "render-template",
+    "question": "How does Flask render a named template with a given context?",
+    "gold": [
+      {"file": "templating.py", "symbol": "render_template"},
+      {"file": "templating.py", "symbol": "_render"}
+    ]
+  },
+  {
+    "id": "cli-find-app",
+    "question": "How does Flask's CLI find a Flask application instance inside a Python module, and what happens if a factory function is called with the wrong arguments?",
+    "gold": [
+      {"file": "cli.py", "symbol": "find_best_app"},
+      {"file": "cli.py", "symbol": "_called_with_wrong_args"}
+    ]
+  },
+  {
+    "id": "session-property",
+    "question": "What does accessing the session property on a request context actually do?",
+    "gold": [
+      {"file": "ctx.py", "symbol": "AppContext.session"},
+      {"file": "ctx.py", "symbol": "AppContext._get_session"}
+    ]
+  },
+  {
+    "id": "stream-template",
+    "question": "How does Flask render a named template as a stream instead of building the whole response at once?",
+    "gold": [
+      {"file": "templating.py", "symbol": "stream_template"},
+      {"file": "templating.py", "symbol": "_stream"},
+      {"file": "helpers.py", "symbol": "stream_with_context"}
+    ]
+  },
+  {
+    "id": "pop-context",
+    "question": "What happens when Flask pops a request context, including request teardown?",
+    "gold": [
+      {"file": "ctx.py", "symbol": "AppContext.pop"},
+      {"file": "app.py", "symbol": "Flask.do_teardown_request"}
+    ]
+  },
+  {
+    "id": "view-as-view",
+    "question": "How does Flask convert a View class into a callable view function that can be registered for a route?",
+    "gold": [
+      {"file": "views.py", "symbol": "View.as_view"}
+    ]
+  },
+  {
+    "id": "template-attribute",
+    "question": "How can Python code invoke a macro exported by a Jinja template?",
+    "gold": [
+      {"file": "helpers.py", "symbol": "get_template_attribute"}
+    ]
+  },
+  {
+    "id": "methodview-dispatch",
+    "question": "What does MethodView.dispatch_request do?",
+    "gold": [
+      {"file": "views.py", "symbol": "MethodView.dispatch_request"}
+    ]
+  }
+]
