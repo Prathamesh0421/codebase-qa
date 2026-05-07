@@ -10,9 +10,10 @@ graph, pulling in a function's callers and callees. That is what lets it answer
 *"what happens between a request arriving and my view function running"* rather
 than only *"what does this one function do"*.
 
-> **Status: in development.** See [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md)
-> for phase-by-phase progress. No retrieval-quality numbers are published here
-> until the evaluation harness has measured them.
+> **Status: in development** — retrieval is measured (below); the agent
+> pipeline, API, and deployment are not yet built. See
+> [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) for
+> phase-by-phase progress.
 
 ## How it works
 
@@ -27,6 +28,38 @@ Three retrieval strategies stay permanently selectable by config — `naive`,
 `hybrid`, `hybrid_graph` — because the project's central claim is that
 call-graph expansion beats semantic similarity alone, and that claim is only
 worth anything if the comparison is reproducible at any commit.
+
+## Retrieval quality
+
+Measured on 25 hand-labeled Flask questions. Gold sets (which file/symbol a
+correct answer must cite) were written by reading Flask's source directly,
+*before* consulting `call_edges` — deliberately, so that measuring whether
+graph expansion finds a question's gold chunks isn't circular with how the
+gold chunks were chosen. See `evals/datasets/flask_qa.json` and
+`evals/runners/retrieval_eval.py`.
+
+| strategy | precision | recall | avg chunks returned |
+|---|---|---|---|
+| naive | 0.13 | 0.89 | 10.0 |
+| hybrid | 0.13 | 0.89 | 10.0 |
+| hybrid_graph | 0.08 | **1.00** | 22.6 |
+
+The honest result: **hybrid's lexical + symbol fusion measured zero recall
+improvement over naive dense search alone** — naive and hybrid tie on every
+individual question in the set, not just on average. All of the measured
+lift comes from call-graph expansion, and it's concentrated exactly where
+this project's thesis predicts: 20 of 25 questions are single-function
+lookups where naive already hits 100% recall (a ceiling, nothing left to
+win), and the other 5 are multi-hop questions ("what happens between X and
+Y") where naive and hybrid stall at 33–50% recall and `hybrid_graph` recovers
+100%. Of the gold chunks that only graph expansion found, 4 of 9 were located
+by *no other retrieval mechanism at any rank* — not a near-miss another
+component almost ranked highly, but genuinely inaccessible without walking
+the call graph.
+
+The cost is real, not free: `hybrid_graph` returns more than double the
+chunks on average (22.6 vs 10), which is lower precision and more context
+for an LLM to read per answer.
 
 ## Running it
 
