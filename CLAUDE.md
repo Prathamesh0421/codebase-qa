@@ -95,7 +95,20 @@ an impressive invented one.
   against the real Flask fixture instead of only a hand-built one, both
   fixed and pinned by tests — see "Bare symbol matching" and "Graph-label
   precision" below.
-- Everything past Phase 8: not started.
+- **Phase 9 (evaluation harness): done, checkpoint discussed and closed.**
+  `evals/runners/{metrics,retrieval_eval}.py`, `evals/datasets/flask_qa.json`
+  (25 hand-labeled questions, gold written from reading Flask's source
+  directly, checked against `call_edges` only afterward to avoid a
+  circularity trap). 229 tests green. Real numbers are in the README's
+  "Retrieval quality" section. Headline finding: hybrid's lexical+symbol
+  fusion measured **zero** recall lift over naive on this set (tied on every
+  individual question); call-graph expansion delivered the only measured
+  improvement (100% recall, up from 33–50%, on the 5 multi-hop questions).
+  `HybridGraphStrategy`'s primary portion is exactly `HybridStrategy`'s own
+  top-k, so a fixed-k precision/recall metric is structurally blind to what
+  graph expansion adds — the harness reports a second metric (recall over
+  the *full* returned list) specifically to see past that.
+- Everything past Phase 9: not started.
 - **`tree-sitter` is pinned `>=0.25,<0.26`, and this pin is load-bearing.**
   0.26.0 segfaults the interpreter on Python 3.14.2 when reading
   `Node.start_point`/`end_point` during `QueryCursor.matches()` iteration on
@@ -196,6 +209,23 @@ Departures from the design doc, all agreed during review:
   9's eval needs the *exact* string `"graph"` to mean "found only by walking
   the call graph" — anything looser overstates what graph expansion
   contributed.
+
+- **A second recall metric exists because the obvious one is structurally
+  blind to graph expansion.** `HybridGraphStrategy.retrieve()` returns
+  `primary + expanded`, where `primary` is `HybridStrategy`'s own top-k,
+  unchanged — so precision@k/recall@k computed the conventional way is
+  *identical* between `hybrid` and `hybrid_graph` by construction, no matter
+  how much graph expansion actually helps. The eval harness additionally
+  reports recall over `hybrid_graph`'s full returned list (primary +
+  expansion), which is the only number that can see past that cutoff.
+
+- **Eval gold sets are written from source, not from `call_edges`.** Picking
+  gold chunks for multi-hop questions by walking the call graph would only
+  prove traversal works — already proven differentially in Phase 7. Each of
+  the 25 questions' gold sets was written by reading Flask's actual source
+  and deciding what a correct answer must cite, with `call_edges` consulted
+  only afterward as a check. Avoids measuring "does my traversal find what I
+  selected via my traversal."
 
 - **Local + hosted embeddings behind one interface.** Local
   (`sentence-transformers`) for dev/CI/evals — free, reproducible, no rate

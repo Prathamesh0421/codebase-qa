@@ -330,7 +330,7 @@ into the tests and docs.
 
 ---
 
-## Phase 9 — Evaluation harness ⭐ `[ ]`
+## Phase 9 — Evaluation harness ⭐ `[x]`
 
 **Goal:** find out whether the core hypothesis is actually true.
 
@@ -351,6 +351,41 @@ one.
 README whatever they say.
 
 ⛔ **Checkpoint: we discuss the results before continuing.**
+
+✅ *Real numbers for all three strategies against 25 hand-labeled Flask
+questions — see the README's "Retrieval quality" section for the full table
+and discussion. Headline: hybrid's lexical+symbol fusion measured zero recall
+lift over naive (tied on every individual question, not just on average);
+call-graph expansion delivered the only measured improvement, +0.11 recall on
+average and 100% recall (up from 33–50%) on the 5 multi-hop questions the
+project's thesis specifically targets. Checkpoint discussed and closed.*
+
+**Built:** `evals/runners/metrics.py` (pure precision/recall scoring, no
+database — `GoldItem`, `chunk_matches_gold`, `score`), `evals/runners/
+retrieval_eval.py` (the harness: runs all three strategies against the same
+25 questions via `get_strategy()`, prints a per-question breakdown plus
+aggregate precision/recall, a recall-lift figure isolating what graph
+expansion specifically adds beyond hybrid's own top-k, and a source-
+attribution count of how many recovered gold chunks were found by *no other
+mechanism at any rank*), `evals/datasets/flask_qa.json` (25 questions). 12 new
+unit tests, 229 total green.
+
+**A metric had to be designed around a structural blind spot.**
+`HybridGraphStrategy.retrieve()` returns `primary + expanded`, where `primary`
+is exactly `HybridStrategy`'s own top-k, unchanged — so precision@k/recall@k
+computed the conventional way is *numerically identical* between `hybrid` and
+`hybrid_graph`, always, by construction, regardless of whether graph expansion
+helped at all. Fixed by adding a second metric — recall over `hybrid_graph`'s
+*full* returned list (primary + expansion) — specifically because a
+fixed-k metric can't see past a cutoff that graph-expanded chunks live
+entirely beyond.
+
+**The labeled set was built to avoid a circularity trap.** Selecting gold
+chunks for multi-hop questions *by walking `call_edges`* would only prove
+traversal works — already proven differentially in Phase 7. Every question's
+gold set was instead written by reading Flask's actual source and deciding
+what a correct answer would have to cite, with `call_edges` consulted only
+afterward, as a check, not an input.
 
 ---
 

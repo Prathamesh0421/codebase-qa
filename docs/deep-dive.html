@@ -880,6 +880,34 @@
   </div>
 
   <div class="decision">
+    <h3>A second recall metric, because the obvious one can't see graph expansion</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd><code>HybridGraphStrategy.retrieve()</code> returns <code>primary + expanded</code>, where <code>primary</code> is exactly <code>HybridStrategy</code>'s own fused top-k, unchanged.</dd>
+      <dt>Problem</dt>
+      <dd>Precision@k / recall@k computed the conventional way is therefore <em>numerically identical</em> between <code>hybrid</code> and <code>hybrid_graph</code> — always, by construction, regardless of how much graph expansion actually contributes. Graph-expanded chunks live entirely past the k cutoff; a fixed-k metric is structurally blind to them.</dd>
+      <dt>Decision</dt>
+      <dd>Report both: the fixed-k row (printed with a note that the identity is expected, not hidden), and a second metric — recall computed over <code>hybrid_graph</code>'s <em>full</em> returned list, primary plus expansion. Only the second one can answer "did graph expansion help."</dd>
+      <dt class="k-ask">If asked</dt>
+      <dd>"Why not just report the full-list metric and drop the identical row? Because the identity itself is informative — an interviewer asking why hybrid_graph's headline metric equals hybrid's gets a much better answer from a printed row and one sentence than from a metric that quietly disappeared."</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>Eval gold sets written from source, not from the call graph</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>Multi-hop questions need gold sets spanning several connected functions — the natural temptation is to pick them by walking <code>call_edges</code> from a plausible starting point.</dd>
+      <dt>Problem</dt>
+      <dd>Doing that makes the eval circular: measuring whether call-graph expansion finds chunks that were <em>selected via the call graph</em> only proves traversal works, which Phase 7's differential test already proved. It would look like new evidence for the retrieval thesis while being none.</dd>
+      <dt>Decision</dt>
+      <dd>Every question's gold set was written by reading Flask's actual source and deciding, independently, what a complete and correct answer would have to cite. <code>call_edges</code> was consulted only afterward — to observe whether the gold sets turned out graph-adjacent, not to construct them.</dd>
+      <dt class="k-ask">If asked</dt>
+      <dd>"How do I know the gold sets aren't just accidentally graph-adjacent anyway, since real code chains through calls? I don't rule that out — real multi-hop flows <em>are</em> often call-graph-adjacent, which is exactly why the technique works. What matters is that adjacency was discovered, not assumed as a selection filter."</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
     <h3>A real conditional edge in the agent graph</h3>
     <dl class="dl-grid">
       <dt>Context</dt>
@@ -1417,6 +1445,67 @@
   <code>"graph+vector"</code>, not bare <code>"graph"</code>, since vector
   search's own candidate pool had already found it too, just not highly
   enough to survive into hybrid's fused top-k.</p>
+
+  <h3>Phase 9 — Evaluation harness <span class="phase-status done">Done</span></h3>
+  <p>
+    25 hand-labeled Flask questions, each with a gold set of
+    <code>(file, symbol)</code> pairs a correct answer would have to cite.
+    <code>evals/runners/retrieval_eval.py</code> runs all three strategies
+    against every question via the same <code>get_strategy()</code> path
+    production code uses, and scores each result against its gold set with
+    plain precision/recall — no model, no judge, just set overlap. This is
+    the phase that either earns the project's central claim or doesn't, and
+    it was moved ahead of the agent layer specifically so the answer would
+    exist while there was still time to act on it.
+  </p>
+
+  <h4>The obvious metric turned out to be blind to the thing being measured</h4>
+  <p>
+    <code>HybridGraphStrategy.retrieve()</code> returns <code>primary +
+    expanded</code>, where <code>primary</code> is exactly
+    <code>HybridStrategy</code>'s own fused top-k, unchanged. Computed the
+    conventional way, precision@k/recall@k for <code>hybrid_graph</code> is
+    therefore <em>numerically identical</em> to <code>hybrid</code>'s — always,
+    by construction, regardless of whether graph expansion helped at all.
+    Graph-expanded chunks live entirely past the k cutoff; a fixed-k metric
+    structurally cannot see them. Caught before it produced a misleading
+    "graph expansion changes nothing" result: a second metric — recall over
+    <code>hybrid_graph</code>'s <em>full</em> returned list, primary plus
+    expansion — was added specifically to see past that cutoff. The fixed-k
+    row is still printed, with a note that the identity is expected, not an
+    absence worth hiding.
+  </p>
+
+  <h4>Avoiding a circularity trap in the labeled set</h4>
+  <p>
+    Picking gold chunks for multi-hop questions by walking
+    <code>call_edges</code> — grabbing whatever's graph-connected to a
+    plausible starting point — would only prove traversal finds what
+    traversal finds. Phase 7's differential test already proved traversal
+    works; measuring that twice would look like new evidence while being
+    none. Every question's gold set was instead written by reading Flask's
+    actual source and deciding, independently, what a complete and correct
+    answer would have to cite. <code>call_edges</code> was consulted only
+    afterward, to check whether the gold sets turned out to be
+    graph-adjacent — an observation about the result, not an input to
+    building it.
+  </p>
+
+  <p><strong>Results:</strong> 12 new tests, 229 total green. The honest
+  headline: hybrid's lexical+symbol fusion measured <strong>zero</strong>
+  recall improvement over naive dense search alone — tied on every single
+  question, not just on average. All of the measured lift came from
+  call-graph expansion, concentrated exactly where the project's thesis
+  predicts: 20 of 25 questions are single-function lookups where naive
+  already hits 100% recall (a ceiling — nothing left to win), and the other
+  5 are multi-hop questions where naive and hybrid stall at 33–50% recall
+  and <code>hybrid_graph</code> recovers 100%. Of the gold chunks graph
+  expansion alone recovered, 4 of 9 were found by <em>no other mechanism at
+  any rank</em> — not a near-miss, genuinely inaccessible without walking
+  the graph. Full numbers and discussion are in the README's "Retrieval
+  quality" section, including the honest cost: <code>hybrid_graph</code>
+  returns more than double the chunks (22.6 vs 10 average), which is lower
+  precision and more context for an LLM to read per answer.</p>
 </section>
 
 <!-- ============================================================ 07 -->
@@ -1661,6 +1750,23 @@
       <dd>A fix produced under time pressure to close one finding deserves the same "run it for real before trusting it" discipline as the original code — verifying the fix against the same real-repo query that exposed the first bug is what caught the second one, not a second round of reasoning about the code in the abstract. It also reframed what the <code>source</code> field is for: not "which single mechanism gets credit," but "what did every mechanism actually see," which turned out to be the more honest and more useful question for Phase 9 to ask.</dd>
     </dl>
   </div>
+
+  <div class="story">
+    <span class="story-tag">An aggregate number that was technically correct and still misleading</span>
+    <h3>Naive and hybrid tied — and the tie itself needed a second look</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>The eval harness's first output was one summary table: mean precision/recall per strategy across all 25 questions. Naive and hybrid printed the exact same numbers — 0.13 precision, 0.89 recall, to two decimal places.</dd>
+      <dt>The reading that would have been wrong</dt>
+      <dd>"Hybrid changes nothing" — plausible, and close to what got reported to the user at first. But a mean tying exactly is also consistent with hybrid winning on some questions and losing on others by amounts that happen to average out, which is a completely different finding with a completely different explanation.</dd>
+      <dt>What was checked instead of assumed</dt>
+      <dd>Pulled the actual retrieved chunk ids for one question directly, outside the harness, before trusting the aggregate: naive and hybrid returned <em>different</em> chunk sets for "how does Flask redirect a client to a different URL?" — not identical result lists that happened to score the same, genuinely different chunks in different order. That ruled out the boring bug explanation (hybrid silently falling back to vector-only) but didn't yet explain the tied mean.</dd>
+      <dt>What the aggregate was hiding</dt>
+      <dd>Added a per-question table before drawing any conclusion. It showed naive and hybrid tied on <em>every individual question</em>, not just on average — 20 easy questions at a 1.0 recall ceiling where there was no room for either to differ, and 5 hard multi-hop questions where hybrid genuinely never recovered anything naive didn't already have. The mean wasn't obscuring a wash between winners and losers; it was accurately reporting a real, uniform non-effect, which is a stronger and more specific finding than the aggregate alone communicated.</dd>
+      <dt>Lesson</dt>
+      <dd>A tied aggregate has more than one honest explanation, and only one of them is checkable by staring at the mean. Printing the per-question breakdown cost a few lines of code and turned "hybrid appears to do nothing" into a specific, defensible claim — hybrid does nothing on <em>this exact set</em>, for reasons traceable to individual questions, not a vague aggregate impression that could have been masking something else entirely.</dd>
+    </dl>
+  </div>
 </section>
 
 <!-- ============================================================ 08 -->
@@ -1794,6 +1900,69 @@
         <code>"graph+vector"</code> are different, honest claims, and only
         the first one is evidence the call graph found something nothing
         else would have.
+      </p>
+    </div>
+  </details>
+
+  <h3>On evaluation</h3>
+
+  <details>
+    <summary>Your eval says hybrid adds nothing. Why keep it at all?</summary>
+    <div class="answer">
+      <p>
+        Two separate reasons, and I try not to blur them. First: the eval's
+        25 questions are all natural-language paraphrases — I deliberately
+        avoided putting literal identifiers in the query text, and hybrid's
+        exact-symbol component is specifically for the case where a question
+        <em>does</em> contain one ("where is <code>dispatch_request</code>
+        defined"). None of my questions ask that way, so the eval never
+        exercised the path hybrid exists for. That's a gap in the eval, not
+        evidence hybrid is dead weight — "unproven" and "disproven" are
+        different claims and I only have grounds for the first.
+      </p>
+      <p>
+        Second, independent of that: <code>naive</code> stays permanently
+        selectable as an invariant regardless of what any single eval run
+        shows, because it's the baseline the entire comparison is measured
+        against — deleting it the moment it "wins" a measurement would
+        quietly end the ability to make that comparison ever again.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why does hybrid_graph's precision@k table row look identical to hybrid's?</summary>
+    <div class="answer">
+      <p>
+        Because it is, by construction — not a bug, and not a coincidence.
+        <code>HybridGraphStrategy.retrieve()</code> returns <code>primary +
+        expanded</code>, where <code>primary</code> is exactly
+        <code>HybridStrategy</code>'s own fused top-k, byte-for-byte
+        unchanged. Any metric computed over just the first k results is
+        computed over that identical primary list, so it can't differ.
+        Graph-expanded chunks live entirely past that cutoff — which is
+        exactly why a second metric exists: recall over the strategy's
+        <em>full</em> returned list, the only one that can see what
+        expansion actually contributed.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How do you know your labeled set isn't just measuring your own traversal code?</summary>
+    <div class="answer">
+      <p>
+        By not building the gold sets from the call graph in the first
+        place. It would have been easy — for a multi-hop question, walk
+        <code>call_edges</code> from a plausible starting point and use
+        whatever's reachable as the gold set. That measures "does traversal
+        find what traversal finds," which Phase 7's differential test
+        against a real networkx implementation already settled. Instead,
+        every gold set was written by reading Flask's actual source and
+        deciding independently what a complete answer would have to cite;
+        <code>call_edges</code> was consulted only afterward, to observe
+        whether the gold sets turned out to be graph-adjacent — which most
+        of them did, but as a finding, not a filter I built in.
       </p>
     </div>
   </details>
@@ -2235,6 +2404,9 @@
     <li><strong>Symbol matching misses single-word, all-lowercase identifiers.</strong> Shape-based filtering (an underscore or internal capital required) can't distinguish a real function named e.g. <code>dispatch</code> from the English verb, so it doesn't get the exact-match boost. A deliberate tradeoff against the worse failure — common words polluting matches — not an oversight.</li>
     <li><strong>Chunk granularity affects lexical recall in a way retrieval can't fix.</strong> A whole-class chunk (Flask's <code>Flask</code> class is 1500-plus lines, one chunk) can lexically match many unrelated query terms just by containing them somewhere in its body. Retrieval-layer filtering narrows this; it doesn't eliminate it. A chunking-granularity question, out of this phase's scope.</li>
     <li><strong>No numbers claimed until measured.</strong> No precision@k or latency figure goes in the README or on a résumé before the harness produces it. A modest measured number is defensible; an impressive invented one collapses on the second question.</li>
+    <li><strong>The labeled set is small and single-repo.</strong> 25 questions against Flask alone. Real, but not enough to generalize a percentage beyond "the direction of the effect held on the repo tested" — a second anchor repo would be needed before quoting these numbers as broadly predictive.</li>
+    <li><strong>The labeled set never tests hybrid's actual purpose.</strong> All 25 questions are natural-language paraphrases with no literal identifiers in the query text — so hybrid's exact-symbol component, built specifically for "where is <code>dispatch_request</code> defined"-style questions, was never exercised. Its measured zero lift is honest for this set and not evidence it's unnecessary in general.</li>
+    <li><strong>No load testing exists at any layer.</strong> Every performance-shaped claim in this document (indexing time, traversal query bounds) is architectural reasoning from one mid-size repo (Flask, 446 chunks), not a benchmark. Real latency numbers arrive with Phase 14's observability work.</li>
   </ul>
 </section>
 
