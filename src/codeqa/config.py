@@ -84,6 +84,14 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 3
 
+    # ------------------------------------------------------------ agents
+    # Total locate attempts the trace->locate retry edge is allowed, INCLUDING
+    # the first one -- 2 means one retry. Not the same knob as llm_max_retries
+    # above, which is litellm's own retry-on-transient-failure count; this one
+    # bounds a deliberate re-query loop over good responses that just weren't
+    # enough context, not error recovery.
+    agent_max_attempts: int = 2
+
     # ------------------------------------------------------------ ingestion
     clone_max_mb: int = 500
     clone_timeout_seconds: int = 300

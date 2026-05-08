@@ -35,7 +35,10 @@ appear in the excerpts.
 """
 
 
-def _format_context(chunks: list[RetrievedChunk]) -> str:
+def format_context(chunks: list[RetrievedChunk]) -> str:
+    # Public: Phase 10's trace node prompt (agents/logic.py) formats the same
+    # located chunks into its own "is this enough?" prompt and shouldn't
+    # duplicate this formatting.
     if not chunks:
         return "(no relevant source excerpts were found)"
 
@@ -47,7 +50,7 @@ def _format_context(chunks: list[RetrievedChunk]) -> str:
 
 
 def build_messages(question: str, chunks: list[RetrievedChunk]) -> list[dict]:
-    context = _format_context(chunks)
+    context = format_context(chunks)
     return [
         {"role": "system", "content": _SYSTEM_PROMPT},
         {
