@@ -918,8 +918,40 @@
       <dd>Give the agent graph a genuine cycle: if trace finds insufficient context, route back to locate to re-query with refined terms, bounded by an attempt counter in state.</dd>
       <dt class="k-give">Gave up</dt>
       <dd>Latency in the retry path, and a new non-termination risk that the attempt counter has to bound.</dd>
+      <dt>Built (Phase 10)</dt>
+      <dd>Proven to actually fire, not just exist, by a test that mocks two different trace verdicts in sequence (<code>INSUFFICIENT</code>, then <code>SUFFICIENT</code>) and asserts <code>locate</code> ran twice — a test asserting only that the edge is wired into the graph couldn't tell "the cycle exists" from "the cycle executes correctly."</dd>
       <dt class="k-ask">If asked</dt>
       <dd>"Honestly, for a purely linear pipeline LangGraph would be overkill — three function calls would do. It earns its place because of the retry edge, which needs conditional routing and shared state. I'd rather state that than pretend the linear version justified the dependency."</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>The retry edge is measurably redundant with call-graph expansion</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>Ran the retry mechanism against real Flask under all three retrieval strategies, scoring recall on Phase 9's <code>request-lifecycle</code> gold set before and after the retry fired, rather than assuming the mechanism "works" because it executes.</dd>
+      <dt>What the numbers show</dt>
+      <dd>Under <code>naive</code>: recall 0.25 → 0.38 after retry. Under <code>hybrid</code>: 0.12 → 0.38, precision also improving (0.10 → 0.20). Under <code>hybrid_graph</code>: 1.00 → 1.00 — attempt 1 already sits at the recall ceiling via call-graph expansion alone, so the retry can only add noise, and precision measurably drops (0.32 → 0.29).</dd>
+      <dt>Reading</dt>
+      <dd>The agent's re-query loop and Phase 8's call-graph expansion are two different mechanisms solving the same underlying problem: a single query embedding can't reach every relevant chunk in a multi-hop flow. Whichever one already ran captures most of the available gain, which makes the second one redundant on the same question, not additive.</dd>
+      <dt>Decision</dt>
+      <dd>Kept the retry edge regardless of the redundancy with <code>hybrid_graph</code> specifically — a repo where bounded call-graph expansion (<code>graph_max_depth=2</code>, tier2/3 languages with degraded call graphs, or a chunk simply outside expansion's reach) doesn't recover enough context is exactly the case the retry would still earn its keep on.</dd>
+      <dt class="k-ask">If asked</dt>
+      <dd>"Doesn't this mean the retry is pointless with your recommended default strategy? On this one question, yes — that's the honest reading of the number, and I'd rather say that than claim a universal win the data doesn't support. It stops being redundant the moment retrieval alone can't reach the answer, which is a real, not hypothetical, failure mode for graph expansion bounded by depth."</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>Sorting chunks at display time instead of trusting accumulation order</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd><code>--agent</code>'s <code>Retrieved:</code> list is built from chunks accumulated across possibly-multiple locate attempts (<code>merge_chunks</code>), then printed the same way the direct, single-retrieval CLI path already did.</dd>
+      <dt>Problem</dt>
+      <dd>Found in the first real run against Flask, reading the actual output rather than trusting the tests: a second locate attempt's real-scored primary chunks printed <em>after</em> the first attempt's <code>0.000</code>-sentinel graph-expanded ones. <code>merge_chunks</code> only promises accumulation order (existing first, then new), which happened to equal display order in the single-attempt case the direct CLI path always has, but stopped being true the moment a second attempt's own primary-then-graph ordering got appended after the first's.</dd>
+      <dt>Decision</dt>
+      <dd><code>sort_for_display</code>: real scores descending first; any chunk graph expansion touched (identifiable by <code>"graph" in source</code>, since the sentinel score is never comparable to a real one) grouped at the end, regardless of which locate attempt found it.</dd>
+      <dt class="k-ask">If asked</dt>
+      <dd>"How did you catch this? Not from the test suite — every existing test asserted on chunk identity and score values, never on printed order. It surfaced from reading one real CLI run's output end to end instead of stopping at green tests, the same discipline that caught the Phase 8 hybrid-retrieval regressions."</dd>
     </dl>
   </div>
 
@@ -1506,6 +1538,66 @@
   quality" section, including the honest cost: <code>hybrid_graph</code>
   returns more than double the chunks (22.6 vs 10 average), which is lower
   precision and more context for an LLM to read per answer.</p>
+
+  <h3>Phase 10 — Multi-agent pipeline <span class="phase-status done">Done</span></h3>
+  <p>
+    A <code>StateGraph</code> (Pydantic state, verified interactively that a
+    plain stdlib dataclass like <code>RetrievedChunk</code> works directly as
+    a Pydantic field type) with three nodes: <code>locate</code> reruns the
+    configured retrieval strategy (unchanged from Phase 8) against a
+    possibly-refined query; <code>trace</code> asks the LLM a small,
+    non-streaming sufficiency question and parses a two-keyword verdict;
+    <code>synthesize</code> reuses Phase 5's <code>synthesize()</code>
+    unchanged. The one real cycle: if <code>trace</code> says
+    <code>INSUFFICIENT</code>, route back to <code>locate</code> with a
+    refined query, bounded by <code>agent_max_attempts</code>.
+  </p>
+
+  <h4>Preserving a streaming contract that a state graph doesn't hand you for free</h4>
+  <p>
+    A LangGraph node returns one state update, not a sequence of them — the
+    natural shape for <code>synthesize</code>'s node would flatten Phase 5's
+    token-by-token generator into a single blocking call, silently
+    contradicting <code>synthesize()</code>'s own docstring, written back in
+    Phase 5, promising this node would stream. Verified interactively before
+    committing to a design: <code>langgraph.config.get_stream_writer()</code>
+    lets a node emit custom events mid-execution, consumed via
+    <code>graph.stream(state, stream_mode="custom")</code> from outside —
+    confirmed with a throwaway two-node graph before wiring it into the real
+    synthesize node, the same "prove the mechanism in isolation first"
+    discipline used for LangGraph's Pydantic-state and conditional-edge
+    support earlier in this same phase.
+  </p>
+
+  <h4>The first real run's own output was the tell, twice</h4>
+  <p>
+    Every unit and integration test was green — including one specifically
+    designed to prove the retry edge fires, not just exists — before running
+    <code>codeqa ask --agent</code> against real Flask with a forced retry.
+    Reading that one real run's actual printed output surfaced two things no
+    test had: the refined query's second locate attempt added three
+    chunks — <code>DispatchingJinjaLoader</code>, a duplicate
+    <code>View.view</code>, <code>FormDataRoutingRedirect</code> — none of
+    them more relevant than what attempt 1 already had via
+    <code>hybrid_graph</code>'s own call-graph expansion; and the
+    <code>Retrieved:</code> list itself was out of order, a second attempt's
+    real-scored chunks printing after the first attempt's
+    <code>0.000</code>-sentinel graph-expanded ones. Neither was caught by
+    the test suite, because no test asserted on retrieval <em>quality</em>
+    after a retry or on <em>printed order</em> — both are documented in
+    Decisions and War Stories, since chasing down what the real output
+    actually showed is more informative than the phase's original plan.
+  </p>
+
+  <p><strong>Results:</strong> 21 new tests, 253 total green. Verified end to
+  end against real Flask with a genuine retry (25 → 28 accumulated chunks).
+  Measured, not assumed: under <code>naive</code>/<code>hybrid</code> the
+  retry is a real recall win (0.25→0.38, 0.12→0.38 on Phase 9's
+  <code>request-lifecycle</code> gold set); under <code>hybrid_graph</code>
+  it's redundant — attempt 1 already sits at the recall ceiling via call-graph
+  expansion alone, so the retry only adds noise (precision 0.32→0.29). Kept
+  the edge anyway: a repo where bounded expansion doesn't reach far enough is
+  exactly where it would still help.</p>
 </section>
 
 <!-- ============================================================ 07 -->
@@ -1765,6 +1857,23 @@
       <dd>Added a per-question table before drawing any conclusion. It showed naive and hybrid tied on <em>every individual question</em>, not just on average — 20 easy questions at a 1.0 recall ceiling where there was no room for either to differ, and 5 hard multi-hop questions where hybrid genuinely never recovered anything naive didn't already have. The mean wasn't obscuring a wash between winners and losers; it was accurately reporting a real, uniform non-effect, which is a stronger and more specific finding than the aggregate alone communicated.</dd>
       <dt>Lesson</dt>
       <dd>A tied aggregate has more than one honest explanation, and only one of them is checkable by staring at the mean. Printing the per-question breakdown cost a few lines of code and turned "hybrid appears to do nothing" into a specific, defensible claim — hybrid does nothing on <em>this exact set</em>, for reasons traceable to individual questions, not a vague aggregate impression that could have been masking something else entirely.</dd>
+    </dl>
+  </div>
+
+  <div class="story">
+    <span class="story-tag">Every test was green, and the first real run still had two real bugs</span>
+    <h3>A working retry loop that made retrieval worse, and a list printed in the wrong order</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>The agent pipeline's full test suite was green, including the one test specifically built to prove the retry edge fires (not just exists): mock two different trace verdicts in sequence, assert <code>locate</code> ran twice. Then it ran, once, for real, against Flask, with a forced retry.</dd>
+      <dt>What the raw output showed</dt>
+      <dd>Two things, both visible just from reading the printed CLI output rather than any assertion: the refined query's second locate call added three chunks — <code>DispatchingJinjaLoader</code>, a duplicate <code>View.view</code>, <code>FormDataRoutingRedirect</code> — none of them plausibly more relevant to "how does Flask dispatch a request" than what attempt 1 already had. And the <code>Retrieved:</code> list itself was visibly out of order: entries with real scores (<code>0.015</code>) printed after entries with the <code>0.000</code> graph-expansion sentinel.</dd>
+      <dt>Why the tests missed both</dt>
+      <dd>The retry-fires test asserts on <code>attempt</code> count and specific chunk identities in a hand-built two-function fixture small enough that any retry trivially adds something — it was never designed to ask whether what got added was any <em>good</em>. And no test anywhere asserted on the CLI's printed order, only on chunk scores and citations being present somewhere in the output. Both gaps are honest: the tests verify what they were written to verify, and neither of these properties was in scope for them.</dd>
+      <dt>Checked, not assumed, once the smell showed up</dt>
+      <dd>For the retry quality question: reran the same scenario under <code>naive</code> and <code>hybrid</code> instead of <code>hybrid_graph</code>, scoring recall with the eval harness's own <code>score()</code> function before and after the retry. The retry helped substantially under both (0.25→0.38, 0.12→0.38) — the earlier result wasn't "the retry is broken," it was "the retry is redundant with call-graph expansion specifically," a completely different and more precise finding. For the ordering bug: traced it to <code>merge_chunks</code> only ever promising accumulation order, which happened to equal display order in every case the tests covered (single locate attempt) and stopped being true the moment a real retry appended a second attempt's own primary-then-graph ordering after the first's.</dd>
+      <dt>Lesson</dt>
+      <dd>A green test suite proves the properties it encodes, not the properties that seem implied by the feature's name. "The retry edge fires" and "the retry edge helps" are different claims, and only the first one had a test. Running the real thing once, end to end, and actually reading what it printed — not just checking the exit code — is what surfaced both gaps, and it took less time than either bug would have cost to find later.</dd>
     </dl>
   </div>
 </section>
@@ -2042,6 +2151,57 @@
         LangGraph with "support for cycles" while the cycles were in the
         <em>call</em> graph, not the agent graph — I caught that conflation and
         added a real cycle rather than leave the justification hollow.
+      </p>
+      <p>
+        And it's not just wired in — it's proven to fire. The integration
+        test mocks two different trace verdicts in sequence
+        (<code>INSUFFICIENT</code> then <code>SUFFICIENT</code>) and asserts
+        <code>locate</code> actually ran twice, not just that the edge exists
+        in the compiled graph.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Does the retry loop actually help?</summary>
+    <div class="answer">
+      <p>
+        Measured, not assumed, and the honest answer is "it depends which
+        retrieval strategy is underneath it." Ran the same real Flask
+        question through the retry mechanism under all three strategies and
+        scored recall on Phase 9's <code>request-lifecycle</code> gold set
+        before and after. Under <code>naive</code>/<code>hybrid</code> it's a
+        genuine recall win (0.25→0.38, 0.12→0.38). Under
+        <code>hybrid_graph</code>, attempt 1 already hits the recall ceiling
+        via call-graph expansion alone, so the retry can only add noise —
+        precision measurably drops (0.32→0.29).
+      </p>
+      <p>
+        The retry loop and call-graph expansion are two different mechanisms
+        for the same underlying gap: a single query embedding can't reach
+        every relevant chunk in a multi-hop flow. Whichever one runs first
+        captures most of the available gain, which is why the second one
+        looks redundant on the same question rather than additive. Kept the
+        edge anyway — a repo where bounded expansion doesn't reach far enough
+        is exactly the case it would still help on.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>How does the final answer still stream token by token through a state graph?</summary>
+    <div class="answer">
+      <p>
+        A LangGraph node normally returns one state update, which would
+        naturally flatten Phase 5's token-by-token generator into a single
+        blocking call — exactly the kind of quiet regression that's easy to
+        miss since the pipeline would still "work," just without streaming.
+        <code>langgraph.config.get_stream_writer()</code> lets a node emit
+        custom events mid-execution instead of waiting to return; a caller
+        using <code>graph.stream(state, stream_mode="custom")</code> receives
+        them as they're written. Verified with a throwaway two-node graph
+        before trusting the design, then wired into the real synthesize node
+        unchanged from how Phase 5 built it.
       </p>
     </div>
   </details>
@@ -2407,6 +2567,8 @@
     <li><strong>The labeled set is small and single-repo.</strong> 25 questions against Flask alone. Real, but not enough to generalize a percentage beyond "the direction of the effect held on the repo tested" — a second anchor repo would be needed before quoting these numbers as broadly predictive.</li>
     <li><strong>The labeled set never tests hybrid's actual purpose.</strong> All 25 questions are natural-language paraphrases with no literal identifiers in the query text — so hybrid's exact-symbol component, built specifically for "where is <code>dispatch_request</code> defined"-style questions, was never exercised. Its measured zero lift is honest for this set and not evidence it's unnecessary in general.</li>
     <li><strong>No load testing exists at any layer.</strong> Every performance-shaped claim in this document (indexing time, traversal query bounds) is architectural reasoning from one mid-size repo (Flask, 446 chunks), not a benchmark. Real latency numbers arrive with Phase 14's observability work.</li>
+    <li><strong>The agent retry loop is measurably redundant with <code>hybrid_graph</code>.</strong> It's a real recall win under naive/hybrid but adds only noise once call-graph expansion already recovered everything reachable — two mechanisms for the same gap, and whichever runs first captures most of the benefit. Kept because a repo where bounded expansion doesn't reach far enough is a real, not hypothetical, case it still helps on.</li>
+    <li><strong>Every agent-pipeline test uses a mocked LLM.</strong> No live API key exists in this environment (same honesty boundary as Phases 5/8/9). <code>trace</code>'s sufficiency judgment has never been exercised against a real model's actual reasoning — only against hand-scripted <code>SUFFICIENT</code>/<code>INSUFFICIENT</code> responses. Whether a real LLM reliably produces the expected two-keyword format, and judges sufficiency well, is untested.</li>
   </ul>
 </section>
 

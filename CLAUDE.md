@@ -108,7 +108,20 @@ an impressive invented one.
   top-k, so a fixed-k precision/recall metric is structurally blind to what
   graph expansion adds — the harness reports a second metric (recall over
   the *full* returned list) specifically to see past that.
-- Everything past Phase 9: not started.
+- **Phase 10 (multi-agent pipeline): done and reviewed.** `agents/{state,
+  logic,nodes,graph}.py`, `--agent` flag on `codeqa ask`. 253 tests green,
+  including one that proves the trace→locate retry edge actually fires
+  (mocks two different trace verdicts in sequence, asserts `locate` ran
+  twice) rather than just existing structurally. Verified end to end
+  against real Flask with a real retry (25 → 28 accumulated chunks).
+  **Measured, not assumed: the retry's value is redundant with
+  `hybrid_graph` specifically** — under naive/hybrid it's a real recall win
+  (0.25→0.38, 0.12→0.38 on Phase 9's `request-lifecycle` gold set), but
+  under `hybrid_graph` attempt 1 already hits the recall ceiling via call
+  graph expansion alone, so the retry only adds noise (precision
+  0.32→0.29). Two mechanisms for the same underlying problem; whichever
+  runs first captures most of the gain. See "Agent retry redundancy" below.
+- Everything past Phase 10: not started.
 - **`tree-sitter` is pinned `>=0.25,<0.26`, and this pin is load-bearing.**
   0.26.0 segfaults the interpreter on Python 3.14.2 when reading
   `Node.start_point`/`end_point` during `QueryCursor.matches()` iteration on
@@ -174,7 +187,33 @@ Departures from the design doc, all agreed during review:
   line — the cycles were in the *call* graph, not the *agent* graph. That's a
   defensibility hole ("why not three function calls?"). Fix: if `trace` finds
   insufficient context, route back to `locate` to re-query, bounded by an
-  attempt counter.
+  attempt counter. Built in Phase 10; proven to actually fire (not just
+  exist) by a test that mocks two different trace verdicts in sequence and
+  asserts `locate` ran twice.
+
+- **Agent retry redundancy with `hybrid_graph`, found by measuring, not
+  assumed.** Ran the retry mechanism against real Flask under all three
+  retrieval strategies and scored recall on Phase 9's `request-lifecycle`
+  gold set before/after. Under naive/hybrid, a well-targeted refined query
+  is a real recall win (0.25→0.38, 0.12→0.38). Under `hybrid_graph`,
+  attempt 1 already hits the recall ceiling via call-graph expansion alone
+  — the retry can only add noise there (precision 0.32→0.29). The agent's
+  re-query loop and Phase 8's graph expansion are two mechanisms for the
+  same underlying gap (a single query embedding can't reach every relevant
+  chunk in a multi-hop flow); whichever runs first captures most of the
+  gain. Kept the retry edge regardless — a repo where `hybrid_graph`'s
+  bounded expansion doesn't reach far enough is exactly where it would
+  still help — but the finding is stated as measured, not claimed as a
+  universal win.
+
+- **`sort_for_display`, because attempt-accumulation order isn't score
+  order.** First version of `--agent`'s CLI output printed chunks in
+  whatever order `merge_chunks` accumulated them across locate attempts —
+  which meant a second attempt's real-scored primary results could print
+  *after* the first attempt's `0.000`-sentinel graph-expanded ones,
+  silently implying an ordering that was never there. Fixed by sorting
+  explicitly at display time instead of trusting concatenation order to
+  double as display order — they were never the same guarantee.
 
 - **RRF for fusion.** The doc says results are "merged and reranked" without
   specifying how. Reciprocal Rank Fusion needs no model and no score-scale

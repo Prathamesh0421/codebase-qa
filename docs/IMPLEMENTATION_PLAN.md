@@ -389,7 +389,7 @@ afterward, as a check, not an input.
 
 ---
 
-## Phase 10 — Multi-agent pipeline `[ ]`
+## Phase 10 — Multi-agent pipeline `[x]`
 
 **Goal:** locate → trace → synthesize in LangGraph.
 
@@ -404,6 +404,59 @@ non-termination.
 
 **Done when:** the pipeline answers multi-hop questions, and the retry edge
 demonstrably fires.
+
+✅ *The retry edge fires and is proven to fire — not just wired — by a test
+that mocks two different trace responses in sequence and asserts `locate`
+ran twice. Verified end to end against real Flask via `codeqa ask --agent`,
+including a real retry (25 → 28 accumulated chunks). 21 new tests, 253 total
+green.*
+
+**Built:** `agents/state.py` (`AgentState`, Pydantic), `agents/logic.py`
+(pure: `build_trace_messages`, `parse_trace_response`, `merge_chunks`,
+`route_after_trace`, `sort_for_display` — no database, no LLM, no
+LangGraph import), `agents/nodes.py` (the three node factories — `locate`
+reruns the configured retrieval strategy against a possibly-refined query;
+`trace` asks the LLM a small non-streaming sufficiency question and parses
+its verdict; `synthesize` reuses Phase 5's `synthesize()` unchanged, emitting
+tokens via `get_stream_writer()` so streaming survives going through the
+graph instead of being flattened into one blocking call — verified
+interactively before committing to the design), `agents/graph.py` (wires and
+compiles the `StateGraph`), `--agent` flag on `codeqa ask` (opt-in; the
+direct Phase 5 path is untouched).
+
+**A genuine, measured finding, not an assumption: the retry's value is
+strategy-dependent, and it's redundant with `hybrid_graph` specifically.**
+Ran the same real Flask question through the retry mechanism under all three
+retrieval strategies and scored recall against Phase 9's `request-lifecycle`
+gold set before and after:
+
+| strategy | attempt 1 recall | after retry | precision (before → after) |
+|---|---|---|---|
+| naive | 0.25 | 0.38 | 0.20 → 0.20 |
+| hybrid | 0.12 | 0.38 | 0.10 → 0.20 |
+| hybrid\_graph | 1.00 | 1.00 (no room left) | 0.32 → 0.29 |
+
+Under naive/hybrid, a well-targeted refined query is a real, measurable
+recall win. Under `hybrid_graph`, attempt 1 already reaches the recall
+ceiling via call-graph expansion alone, so the retry can only add noise
+(hence precision *dropping*) — the agent's re-query loop and Phase 8's
+graph expansion are two different mechanisms for the same underlying
+problem (a single query embedding can't reach every relevant chunk in a
+multi-hop flow), and whichever one already ran first captures most of the
+available gain. Not treated as a reason to remove the retry edge — a
+repo where `hybrid_graph`'s bounded expansion (`graph_max_depth=2`) doesn't
+reach far enough is exactly where it would still earn its keep — but stated
+honestly rather than claimed as a universal win. See War Stories for how
+this was found (the first real run's own output was the tell).
+
+**A second, blocking bug found the same way:** the CLI's `Retrieved:` list
+for `--agent` was printed in attempt-accumulation order, not score order —
+so a second locate attempt's real-scored primary results could print after
+the first attempt's `0.000`-sentinel graph-expanded ones, silently
+implying an ordering that wasn't there. Fixed with `sort_for_display`
+(real scores descending first, any graph-touched sentinel-scored chunk
+grouped after) rather than trusting `merge_chunks`' accumulation order to
+also be display order — the two were never the same guarantee.
 
 ---
 
