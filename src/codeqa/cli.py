@@ -12,6 +12,9 @@ import typer
 from pgvector.psycopg import register_vector
 from rich.console import Console
 
+from codeqa.agents.graph import build_agent_graph
+from codeqa.agents.logic import sort_for_display
+from codeqa.agents.state import AgentState
 from codeqa.config import get_settings
 from codeqa.db import migrate as migrations
 from codeqa.indexing.embeddings import build_embedder
@@ -143,6 +146,11 @@ def ask(
     question: str,
     slug: str = typer.Option(..., "--repo", help="Slug of an indexed repository."),  # noqa: B008
     top_k: int = typer.Option(None, "--top-k", help="Override settings.retrieval_top_k."),  # noqa: B008
+    agent: bool = typer.Option(  # noqa: B008
+        False,
+        "--agent",
+        help="Use the locate->trace->synthesize pipeline (Phase 10) instead of one-shot retrieval.",
+    ),
 ) -> None:
     """Ask a question about an indexed repository and stream the answer."""
     settings = get_settings()
@@ -175,10 +183,24 @@ def ask(
             graph_max_depth=settings.graph_max_depth,
             graph_max_nodes=settings.graph_max_nodes,
         )
-        chunks = strategy.retrieve(conn, repo_id, question, embedder, top_k)
+
+        if agent:
+            _ask_agent(conn, embedder, strategy, repo_id, question, top_k, settings)
+        else:
+            _ask_direct(conn, embedder, strategy, repo_id, question, top_k, settings)
     finally:
         conn.close()
 
+
+def _ask_direct(
+    conn, embedder, strategy, repo_id: int, question: str, top_k: int, settings
+) -> None:
+    """The Phase 5 path: one retrieval call, one synthesize call. Left
+    unchanged by Phase 10's agent pipeline -- --agent is opt-in, not a
+    replacement, the same "naive baseline never deleted" reasoning applied
+    to the simpler of the two CLI paths.
+    """
+    chunks = strategy.retrieve(conn, repo_id, question, embedder, top_k)
     if not chunks:
         console.print("[yellow]No relevant chunks found.[/]")
         raise typer.Exit(1)
@@ -198,6 +220,55 @@ def ask(
     for c in chunks:
         label = c.qualified_name or c.symbol_name
         console.print(f"  [dim]{c.score:.3f}[/]  {c.citation}  [cyan]{label}[/]")
+
+
+def _ask_agent(conn, embedder, strategy, repo_id: int, question: str, top_k: int, settings) -> None:
+    """The Phase 10 path: locate -> trace -> synthesize, with trace able to
+    route back to locate on insufficient context. stream_mode=["updates",
+    "custom"] carries both per-node progress (so the retry, if it fires, is
+    visible) and the synthesize node's token-by-token output in one pass.
+    """
+    graph = build_agent_graph(
+        conn, embedder, strategy, top_k, settings.llm_model, settings.llm_api_key
+    )
+    state = AgentState(
+        repo_id=repo_id,
+        question=question,
+        current_query=question,
+        max_attempts=settings.agent_max_attempts,
+    )
+
+    console.print()
+    final_chunks: list = []
+    for mode, payload in graph.stream(state, stream_mode=["updates", "custom"]):
+        if mode == "custom":
+            # Same markup hazard as the direct path -- an LLM's own bracket
+            # syntax must never be parsed as a rich markup tag.
+            console.print(payload, end="", markup=False, highlight=False)
+            continue
+        for node_name, update in payload.items():
+            if node_name == "locate":
+                final_chunks = update["chunks"]
+                console.print(
+                    f"[dim]locate attempt {update['attempt']}: "
+                    f"{len(update['chunks'])} chunks so far[/]"
+                )
+            elif node_name == "trace":
+                verdict = "sufficient" if update["sufficient"] else "insufficient"
+                console.print(f"[dim]trace: {verdict}[/]")
+                if not update["sufficient"]:
+                    console.print(f"[dim]  refining search: {update['current_query']}[/]")
+    console.print()
+
+    if final_chunks:
+        console.print("\n[dim]Retrieved:[/]")
+        # Chunks accumulated across possibly-multiple locate attempts are in
+        # attempt order, not score order -- sort explicitly rather than
+        # printing a list where a later attempt's real scores can appear
+        # after an earlier attempt's 0.0 graph-expansion sentinel.
+        for c in sort_for_display(final_chunks):
+            label = c.qualified_name or c.symbol_name
+            console.print(f"  [dim]{c.score:.3f}[/]  {c.citation}  [cyan]{label}[/]")
 
 
 @app.command()

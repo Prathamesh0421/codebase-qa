@@ -47,6 +47,25 @@ def _mocked_llm(mock_text: str):
     return patch("codeqa.synthesis.litellm.completion", side_effect=_delegate)
 
 
+def _mocked_agent_llm(trace_responses: list[str], answer_text: str):
+    # "litellm.completion", not "codeqa.synthesis.litellm.completion": the
+    # agent's trace node (agents/nodes.py) and synthesize() both resolve to
+    # the same cached litellm module object, so one patch target covers
+    # both call sites -- same reasoning as test_synthesis.py's module-
+    # caching note, applied across two modules instead of one.
+    state = {"trace_call": 0}
+
+    def _delegate(**kwargs):
+        kwargs.pop("api_key", None)
+        if kwargs.get("stream"):
+            return _real_completion(mock_response=answer_text, **kwargs)
+        text = trace_responses[state["trace_call"]]
+        state["trace_call"] += 1
+        return _real_completion(mock_response=text, **kwargs)
+
+    return patch("litellm.completion", side_effect=_delegate)
+
+
 @pytest.fixture
 def conn():
     dsn = os.environ.get("CODEQA_TEST_DSN", "postgresql://codeqa:codeqa@localhost:5432/codeqa")
@@ -149,6 +168,64 @@ class TestAskCommand:
         answer = "The return type is list[str] and chunks[0] holds the first result."
         with _mocked_llm(answer):
             result = runner.invoke(app, ["ask", "what does it return?", "--repo", "greeter"])
+
+        assert result.exit_code == 0, result.output
+        assert answer in result.output
+
+
+class TestAskAgentCommand:
+    """--agent, the Phase 10 path. --repo greeter and CODEQA_RETRIEVAL_STRATEGY
+    are set the same way as TestAskCommand -- the point of these tests is the
+    Typer wiring and rich console output specifically, not retrieval itself
+    (already covered by test_agent_graph.py against the graph directly).
+    """
+
+    def test_sufficient_on_first_pass_streams_answer_and_lists_chunks(
+        self, indexed_repo, monkeypatch
+    ):
+        monkeypatch.setenv("CODEQA_RETRIEVAL_STRATEGY", "naive")
+        runner = CliRunner()
+
+        with _mocked_agent_llm(["SUFFICIENT"], "Greets a user by name, citing greeter.py:1-3."):
+            result = runner.invoke(
+                app, ["ask", "how does greeting work?", "--repo", "greeter", "--agent"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Greets a user by name" in result.output
+        assert "Retrieved:" in result.output
+        assert "greeter.py:1-3" in result.output
+        assert "sufficient" in result.output
+
+    def test_retry_is_visible_in_cli_output_when_it_fires(self, indexed_repo, monkeypatch):
+        monkeypatch.setenv("CODEQA_RETRIEVAL_STRATEGY", "naive")
+        runner = CliRunner()
+
+        with _mocked_agent_llm(
+            ["INSUFFICIENT: find the greeting format string", "SUFFICIENT"],
+            "Full grounded answer.",
+        ):
+            result = runner.invoke(
+                app, ["ask", "how does greeting work?", "--repo", "greeter", "--agent"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "insufficient" in result.output
+        assert "refining search" in result.output
+        assert "attempt 2" in result.output
+        assert "Full grounded answer." in result.output
+
+    def test_bracket_syntax_in_the_agent_answer_is_not_swallowed_as_markup(
+        self, indexed_repo, monkeypatch
+    ):
+        monkeypatch.setenv("CODEQA_RETRIEVAL_STRATEGY", "naive")
+        runner = CliRunner()
+
+        answer = "The return type is list[str] and chunks[0] holds the first result."
+        with _mocked_agent_llm(["SUFFICIENT"], answer):
+            result = runner.invoke(
+                app, ["ask", "what does it return?", "--repo", "greeter", "--agent"]
+            )
 
         assert result.exit_code == 0, result.output
         assert answer in result.output
