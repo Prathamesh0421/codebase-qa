@@ -17,6 +17,7 @@ from codeqa.agents.logic import sort_for_display
 from codeqa.agents.state import AgentState
 from codeqa.config import get_settings
 from codeqa.db import migrate as migrations
+from codeqa.grounding import ground_answer
 from codeqa.indexing.embeddings import build_embedder
 from codeqa.indexing.pipeline import index_repo
 from codeqa.indexing.store import RepoAlreadyExists, register_repo
@@ -192,6 +193,22 @@ def ask(
         conn.close()
 
 
+def _print_grounding_warning(result) -> None:
+    """Phase 11: nothing here can un-print tokens the terminal already
+    showed live, so this flags what grounding found instead of silently
+    editing scrollback. A non-streaming caller would show result.text
+    directly and never render the raw fake citation at all -- see
+    grounding.py.
+    """
+    if not result.dropped:
+        return
+    raw = ", ".join(c.raw for c in result.dropped)
+    console.print(
+        f"\n[yellow]{len(result.dropped)} citation(s) could not be verified "
+        f"against retrieved context: {raw}[/]"
+    )
+
+
 def _ask_direct(
     conn, embedder, strategy, repo_id: int, question: str, top_k: int, settings
 ) -> None:
@@ -212,9 +229,18 @@ def _ask_direct(
     # is a real failure, not a theoretical one: "List[str]" prints as "List"
     # with markup parsing left on.
     console.print()  # never glue onto whatever printed before this (progress bars, warnings)
+    tokens = []
     for token in synthesize(question, chunks, settings.llm_model, settings.llm_api_key):
         console.print(token, end="", markup=False, highlight=False)
+        tokens.append(token)
     console.print()
+
+    # Grounding runs after the tokens have already streamed to the terminal
+    # -- it can flag an unverifiable citation, but it can't un-print
+    # something already shown live. A non-streaming caller (a future batch
+    # endpoint) would show result.text directly instead, which never
+    # contains the raw fake citation at all.
+    _print_grounding_warning(ground_answer("".join(tokens), chunks))
 
     console.print("\n[dim]Retrieved:[/]")
     for c in chunks:
@@ -240,6 +266,7 @@ def _ask_agent(conn, embedder, strategy, repo_id: int, question: str, top_k: int
 
     console.print()
     final_chunks: list = []
+    final_answer = ""
     for mode, payload in graph.stream(state, stream_mode=["updates", "custom"]):
         if mode == "custom":
             # Same markup hazard as the direct path -- an LLM's own bracket
@@ -258,7 +285,15 @@ def _ask_agent(conn, embedder, strategy, repo_id: int, question: str, top_k: int
                 console.print(f"[dim]trace: {verdict}[/]")
                 if not update["sufficient"]:
                     console.print(f"[dim]  refining search: {update['current_query']}[/]")
+            elif node_name == "synthesize":
+                final_answer = update["answer"]
     console.print()
+
+    # Same "flag, can't un-print" reasoning as the direct path -- the
+    # synthesize node already streamed these tokens live via the custom
+    # writer channel before this point.
+    if final_answer:
+        _print_grounding_warning(ground_answer(final_answer, final_chunks))
 
     if final_chunks:
         console.print("\n[dim]Retrieved:[/]")

@@ -172,6 +172,22 @@ class TestAskCommand:
         assert result.exit_code == 0, result.output
         assert answer in result.output
 
+    def test_fabricated_citation_is_flagged_by_grounding(self, indexed_repo, monkeypatch):
+        # Phase 11 end to end: a citation the mocked LLM invents (a line
+        # range no retrieved chunk actually has) must trigger the grounding
+        # warning through the real CLI wiring, not just at the grounding.py
+        # unit-test level.
+        monkeypatch.setenv("CODEQA_RETRIEVAL_STRATEGY", "naive")
+        runner = CliRunner()
+
+        answer = "Greeting is built in greeter.py:9999-10005."
+        with _mocked_llm(answer):
+            result = runner.invoke(app, ["ask", "how does greeting work?", "--repo", "greeter"])
+
+        assert result.exit_code == 0, result.output
+        assert "could not be verified" in result.output
+        assert "greeter.py:9999-10005" in result.output
+
 
 class TestAskAgentCommand:
     """--agent, the Phase 10 path. --repo greeter and CODEQA_RETRIEVAL_STRATEGY
@@ -229,3 +245,17 @@ class TestAskAgentCommand:
 
         assert result.exit_code == 0, result.output
         assert answer in result.output
+
+    def test_fabricated_citation_is_flagged_by_grounding(self, indexed_repo, monkeypatch):
+        monkeypatch.setenv("CODEQA_RETRIEVAL_STRATEGY", "naive")
+        runner = CliRunner()
+
+        answer = "Greeting is built in greeter.py:9999-10005."
+        with _mocked_agent_llm(["SUFFICIENT"], answer):
+            result = runner.invoke(
+                app, ["ask", "how does greeting work?", "--repo", "greeter", "--agent"]
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "could not be verified" in result.output
+        assert "greeter.py:9999-10005" in result.output
