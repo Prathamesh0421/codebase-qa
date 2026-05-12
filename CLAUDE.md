@@ -121,7 +121,17 @@ an impressive invented one.
   graph expansion alone, so the retry only adds noise (precision
   0.32→0.29). Two mechanisms for the same underlying problem; whichever
   runs first captures most of the gain. See "Agent retry redundancy" below.
-- Everything past Phase 10: not started.
+- **Phase 11 (citation grounding): done and reviewed.** `grounding.py` —
+  `find_citations`/`is_grounded`/`ground_answer`, pure. A claimed citation is
+  grounded if some chunk actually in context has that exact file and its real
+  line range contains the claim; that single containment check covers
+  "citation → chunk in context → range exists," since a chunk's own line
+  numbers already came from tree-sitter's real parse. 16 unit tests plus 2
+  end-to-end CLI tests (a fabricated citation in a mocked LLM response is
+  flagged through the real `codeqa ask` wiring, both `--agent` and not). 271
+  tests green. Wired as a post-stream check, not pre-render suppression — see
+  "Grounding vs. live streaming" below for why.
+- Everything past Phase 11: not started.
 - **`tree-sitter` is pinned `>=0.25,<0.26`, and this pin is load-bearing.**
   0.26.0 segfaults the interpreter on Python 3.14.2 when reading
   `Node.start_point`/`end_point` during `QueryCursor.matches()` iteration on
@@ -214,6 +224,22 @@ Departures from the design doc, all agreed during review:
   silently implying an ordering that was never there. Fixed by sorting
   explicitly at display time instead of trusting concatenation order to
   double as display order — they were never the same guarantee.
+
+- **Grounding vs. live streaming: flag after the fact, don't pretend to
+  suppress before render.** Phase 10's `synthesize_node` already streams
+  tokens live via a LangGraph custom writer channel, verified interactively
+  to arrive as they're written — an established, already-tested contract
+  this phase deliberately did not break. That means by the time
+  `ground_answer` can run (it needs the *complete* answer text — a citation
+  can't be verified from a partial line number arriving mid-stream), an
+  ungrounded citation has already been shown live in both `codeqa ask` paths.
+  `ground_answer` itself still keeps its literal contract for a
+  non-streaming caller — `result.text` never contains the raw fake citation,
+  the marker replaces it — but the CLI's job after streaming is done is to
+  flag what was dropped, not claim it retroactively edited scrollback it
+  can't touch. A future SSE endpoint (Phase 14) that wants true pre-render
+  suppression would need to buffer server-side before its first byte goes
+  out, trading the same latency this phase chose not to pay for the CLI.
 
 - **RRF for fusion.** The doc says results are "merged and reranked" without
   specifying how. Reciprocal Rank Fusion needs no model and no score-scale

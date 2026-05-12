@@ -1038,6 +1038,36 @@
       <dd>Simplicity. Deliberately <em>not</em> Celery — a Postgres job table plus a polling loop is about fifty lines and adds no broker to operate.</dd>
     </dl>
   </div>
+
+  <div class="decision">
+    <h3>One containment check does the whole grounding job</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>The plan describes grounding as three steps: claimed citation → chunk actually in context → line range actually exists in that file.</dd>
+      <dt>Decision</dt>
+      <dd>Implemented as a single check, not three: a citation is grounded if some chunk genuinely in context has that exact file and its real <code>start_line</code>/<code>end_line</code> contain the claimed range. A chunk's own bounds are already ground truth — extracted by tree-sitter from real source in Phase 3 — so a claimed range contained inside one is automatically a real range in a real file. The three-step description and the one-check implementation aren't in tension; the chunk's own provenance is what collapses them.</dd>
+      <dt>Boundary allowed</dt>
+      <dd>A claimed range may narrow a chunk's real bounds (citing a few lines within a bigger function is a legitimate, more precise citation) but never extend past them in either direction — that's a partial fabrication, not a narrowing. Covered by its own test, distinct from the "wholly fabricated range" case.</dd>
+      <dt class="k-ask">If asked</dt>
+      <dd>"Why not check the file's real line count too, separately? Because it can't add information the chunk-containment check doesn't already have — a chunk's range can't exceed its file's real length, since it was parsed from that file. A separate file-length check would be redundant work reaching the same answer through a slower path."</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>Grounding flags after the stream, it doesn't suppress before render</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>Phase 10's <code>synthesize_node</code> already streams tokens live through a LangGraph custom writer channel — an established, tested contract this phase inherited rather than reopened.</dd>
+      <dt>Tension</dt>
+      <dd><code>ground_answer</code> needs the <em>complete</em> answer text — a citation can't be checked from a line number that's only half-arrived. By the time it can run, both <code>codeqa ask</code> paths have already streamed the tokens live, including any that turn out to be an ungrounded citation.</dd>
+      <dt>Decision</dt>
+      <dd>The function's own contract stays literal — <code>result.text</code> never contains the raw fake citation, a marker replaces it, which is exactly what a non-streaming caller would show. The CLI's job once streaming is done is different: print a clear warning listing what was dropped, since it can't retroactively edit what a terminal already displayed.</dd>
+      <dt class="k-give">Gave up</dt>
+      <dd>A literal reading of "dropped, not rendered" for the interactive CLI specifically. Getting it would mean buffering the whole answer server-side before the first token is shown — a real latency cost the terminal UX wasn't worth paying for, on a path where the function's own output already keeps its word for any caller that doesn't stream.</dd>
+      <dt class="k-ask">If asked</dt>
+      <dd>"A live SSE endpoint (Phase 14) faces the identical choice — true pre-render suppression there means buffering server-side before the first byte goes out. Same trade, same honest cost, whichever surface does it."</dd>
+    </dl>
+  </div>
 </section>
 
 <!-- ============================================================ 06 -->
@@ -1598,6 +1628,43 @@
   expansion alone, so the retry only adds noise (precision 0.32→0.29). Kept
   the edge anyway: a repo where bounded expansion doesn't reach far enough is
   exactly where it would still help.</p>
+
+  <h3>Phase 11 — Citation grounding <span class="phase-status done">Done</span></h3>
+  <p>
+    <code>grounding.py</code> — <code>find_citations</code>,
+    <code>is_grounded</code>, <code>ground_answer</code>, all pure, no LLM,
+    no database. <code>synthesize()</code>'s system prompt has asked the
+    model to cite honestly since Phase 5; nothing before this phase checked
+    that a citation it produced pointed anywhere real. The check itself
+    collapses to one containment test — see "One containment check does the
+    whole grounding job" in Decisions — because a retrieved chunk's own line
+    numbers are already ground truth, so a claimed range contained inside
+    one is automatically real.
+  </p>
+
+  <h4>Streaming was already live before grounding could run</h4>
+  <p>
+    Both <code>codeqa ask</code> paths stream tokens to the terminal as they
+    arrive — Phase 10's <code>synthesize_node</code> in particular does this
+    through a LangGraph custom writer channel that was verified and tested
+    to work that way in Phase 10. <code>ground_answer</code> needs the
+    complete answer text to check a citation, which means by the time it can
+    run, any ungrounded citation the model produced has already been shown.
+    Rather than quietly claim a suppression that terminal output makes
+    impossible, the CLI prints a clear post-stream warning naming exactly
+    which citations didn't check out — see "Grounding vs. live streaming" in
+    Decisions for the full reasoning, including what a genuinely
+    pre-render-safe version would cost on a future streaming API.
+  </p>
+
+  <p><strong>Results:</strong> 16 new unit tests (exact match, a narrower
+  sub-range within a real chunk, wrong file, a range extending past a
+  chunk's real boundary, an inverted range, and the fabricated-line-range
+  case the phase's own "done when" bar names explicitly) plus 2 new
+  end-to-end CLI tests proving a fabricated citation in a mocked LLM
+  response is actually flagged through the real <code>codeqa ask</code>
+  wiring — both the direct path and <code>--agent</code> — not just at the
+  unit level. 271 tests green.</p>
 </section>
 
 <!-- ============================================================ 07 -->
@@ -2210,18 +2277,33 @@
     <summary>What stops the model from inventing a citation?</summary>
     <div class="answer">
       <p>
-        Grounding is a deterministic function, not a prompt instruction. Every
-        claimed citation is checked: does that chunk exist in the context we
-        actually assembled, and does the claimed line range actually exist in
-        that file? Citations that fail are dropped before rendering, and the
-        check is unit-tested on both accept and reject paths, including a
-        fabricated line range.
+        Grounding is a deterministic function (<code>grounding.py</code>), not
+        a prompt instruction. Every claimed citation is checked with a single
+        containment test: does some chunk actually in context have that exact
+        file, with its real <code>start_line</code>/<code>end_line</code>
+        containing the claimed range? A chunk's own bounds are already ground
+        truth from tree-sitter's real parse, so that one check covers file
+        existence and range existence at once. 16 unit tests cover accept and
+        reject paths, including a fabricated line range.
       </p>
       <p>
-        The limit worth stating precisely: this verifies the <em>citation</em>,
-        not the <em>claim</em>. It proves the cited code exists and was
-        retrieved. It cannot prove the sentence attached to it is a correct
-        description. Faithfulness is measured separately in the eval harness.
+        Whether a bad citation is <em>dropped before render</em> depends on
+        the caller, and it's worth being precise here rather than
+        overclaiming: <code>ground_answer</code>'s own return value never
+        contains a raw ungrounded citation, so a non-streaming caller shows
+        only clean text. But both <code>codeqa ask</code> paths stream tokens
+        live to the terminal before the full answer exists to check — grounding
+        can't run until the last token arrives. So today the CLI flags what
+        was dropped after the stream finishes rather than literally
+        suppressing it beforehand, which is an honest, stated tradeoff, not a
+        gap I'd want to gloss over if asked directly.
+      </p>
+      <p>
+        The limit worth stating precisely regardless of that: this verifies the
+        <em>citation</em>, not the <em>claim</em>. It proves the cited code
+        exists and was retrieved. It cannot prove the sentence attached to it
+        is a correct description. Faithfulness is measured separately in the
+        eval harness.
       </p>
     </div>
   </details>

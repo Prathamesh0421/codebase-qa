@@ -460,7 +460,7 @@ also be display order — the two were never the same guarantee.
 
 ---
 
-## Phase 11 — Citation grounding `[ ]`
+## Phase 11 — Citation grounding `[x]`
 
 **Goal:** make "withholds ungrounded claims" a real, tested mechanism.
 
@@ -473,6 +473,21 @@ that limit precisely is the defensible position.
 
 **Done when:** unit tests cover accept and reject paths, including a fabricated
 line range.
+
+**Built:** `grounding.py` — `find_citations`/`is_grounded`/`ground_answer`, pure,
+no LLM, no database. One containment check (`chunk.start <= claim.start` and
+`claim.end <= chunk.end`, exact file match) covers the whole "citation → chunk
+in context → range exists" chain at once, since a chunk's own line numbers are
+already ground truth from tree-sitter's real parse (Phase 3). 16 unit tests:
+exact match, a narrower sub-range within a real chunk (legitimate), wrong file,
+a range extending past a chunk's real boundary (partial fabrication, not a
+narrowing), an inverted range, and the fabricated-line-range case the "done
+when" bar names explicitly. Wired into both `codeqa ask` paths (direct and
+`--agent`) with 2 new end-to-end CLI tests proving a fabricated citation in a
+mocked LLM response is actually flagged through the real wiring, not just at
+the unit level. 271 tests green. See "Grounding vs. live streaming" below for
+why the CLI flags ungrounded citations after the fact rather than literally
+suppressing them before render.
 
 ---
 
