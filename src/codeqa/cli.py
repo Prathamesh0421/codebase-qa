@@ -21,6 +21,7 @@ from codeqa.grounding import ground_answer
 from codeqa.indexing.embeddings import build_embedder
 from codeqa.indexing.pipeline import index_repo
 from codeqa.indexing.store import RepoAlreadyExists, register_repo
+from codeqa.indexing.worker import run_worker
 from codeqa.retrieval.strategy import get_strategy
 from codeqa.synthesis import synthesize
 
@@ -315,6 +316,27 @@ def config() -> None:
     for name, value in settings.model_dump().items():
         shown = "[dim]<set>[/]" if name in redacted and value else value
         console.print(f"  [cyan]{name}[/] = {shown}")
+
+
+@app.command()
+def worker(
+    once: bool = typer.Option(  # noqa: B008
+        False, "--once", help="Process at most one job, then exit, instead of polling forever."
+    ),
+) -> None:
+    """Run the durable indexing worker (Phase 12): claim queued jobs from
+    index_jobs, clone git_url repos safely, and index them. Meant to run as
+    a long-lived process (or a supervised one-shot with --once) alongside
+    the API, not from an interactive session.
+    """
+    settings = get_settings()
+    conn = psycopg.connect(settings.dsn)
+    register_vector(conn)
+    try:
+        console.print("[dim]worker started[/]" + (" (--once)" if once else ""))
+        run_worker(conn, settings, once=once)
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
