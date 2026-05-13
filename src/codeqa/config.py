@@ -97,8 +97,31 @@ class Settings(BaseSettings):
     clone_timeout_seconds: int = 300
     # Server-side cloning of user-supplied URLs is an SSRF surface. Parsing is
     # safe by construction -- tree-sitter never executes what it reads -- but
-    # fetching is not.
+    # fetching is not. An allowlist of known public hosting domains sidesteps
+    # resolving DNS and checking IP ranges entirely -- simpler and more
+    # auditable than a private-IP check, and immune to the DNS-rebinding
+    # trick that check has to guard against separately.
     allowed_clone_hosts: tuple[str, ...] = ("github.com", "gitlab.com", "bitbucket.org")
+
+    # Where a git_url repo's clone persists on disk, keyed by repo_id. Not a
+    # tempdir cleaned up after each job -- Phase 13's incremental re-index
+    # needs the previous checkout to diff against, so a repo's clone has to
+    # survive between indexing runs, not just one job's lifetime.
+    clone_workdir: str = "./data/repos"
+    # Checked before starting a new clone, not enforced during one -- one
+    # huge repo shouldn't be able to starve every other job's disk headroom.
+    disk_min_free_mb: int = 1024
+
+    worker_poll_interval_seconds: float = 2.0
+    job_heartbeat_interval_seconds: float = 5.0
+    # A running job whose heartbeat is older than this is presumed to belong
+    # to a dead worker and gets reclaimed back to queued. Comfortably above
+    # job_heartbeat_interval_seconds so a live worker's normal heartbeat
+    # cadence is never mistaken for a stall.
+    job_stale_after_seconds: int = 60
+    # Reclaiming a job that will never succeed (a permanently malformed URL,
+    # say) forever would loop indefinitely instead of ever reporting failure.
+    job_max_attempts: int = 3
 
     # ------------------------------------------------------------ api
     api_host: str = "0.0.0.0"

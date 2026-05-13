@@ -195,3 +195,13 @@ def mark_indexed(conn: psycopg.Connection, repo_id: int, commit_sha: str | None 
             (commit_sha, repo_id),
         )
     conn.commit()
+
+
+def mark_failed(conn: psycopg.Connection, repo_id: int) -> None:
+    """The job-worker counterpart to mark_indexed (Phase 12) -- a repo whose
+    only indexing attempt raised should not sit at 'registered' forever,
+    silently indistinguishable from "not yet tried".
+    """
+    with conn.cursor() as cur:
+        cur.execute("UPDATE repos SET status = 'failed' WHERE id = %s", (repo_id,))
+    conn.commit()
