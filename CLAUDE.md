@@ -131,7 +131,24 @@ an impressive invented one.
   flagged through the real `codeqa ask` wiring, both `--agent` and not). 271
   tests green. Wired as a post-stream check, not pre-render suppression — see
   "Grounding vs. live streaming" below for why.
-- Everything past Phase 11: not started.
+- **Phase 12 (ingestion and the job worker): done and reviewed.**
+  `indexing/clone.py` (SSRF guard via host allowlist, not DNS/IP resolution
+  — reuses `config.py`'s pre-existing `allowed_clone_hosts`, `clone_max_mb`,
+  `clone_timeout_seconds` fields, scaffolded back in Phase 0 but unused until
+  now), `indexing/jobs.py` (`FOR UPDATE SKIP LOCKED` claiming, heartbeats,
+  `reclaim_stale_jobs`), `indexing/worker.py` (heartbeat runs on its own
+  connection — psycopg connections aren't thread-safe, and index_repo is
+  issuing queries on the main connection at the same time), `api/app.py`
+  (`POST /v1/repos`, `GET /v1/repos/{slug}/jobs/{job_id}` — the first code in
+  the `api/` layout slot), `codeqa worker` CLI. 39 tests, 310 total green.
+  **Verified for real, not just against local fixtures**: a genuine public
+  GitHub repo (`octocat/Hello-World`) cloned, indexed, and marked `ready`
+  with its real HEAD SHA, both via `safe_clone` directly and via the full
+  register→enqueue→`process_one_job` path — the phase's literal "done when"
+  bar. Worker-restart survival tested the same way: claim a job, force its
+  heartbeat stale (simulating a dead worker), reclaim it back to `queued`,
+  confirm a *fresh* `process_one_job` call completes it.
+- Everything past Phase 12: not started.
 - **`tree-sitter` is pinned `>=0.25,<0.26`, and this pin is load-bearing.**
   0.26.0 segfaults the interpreter on Python 3.14.2 when reading
   `Node.start_point`/`end_point` during `QueryCursor.matches()` iteration on

@@ -491,7 +491,7 @@ suppressing them before render.
 
 ---
 
-## Phase 12 — Ingestion and the job worker `[ ]`
+## Phase 12 — Ingestion and the job worker `[x]`
 
 **Goal:** any repo, safely.
 
@@ -506,6 +506,26 @@ indexing untrusted code safe.
 
 **Done when:** a public git URL indexes end-to-end and the job survives a worker
 restart.
+
+**Built:** `indexing/clone.py` (`validate_clone_url` -- an SSRF guard by
+*allowlisting* known git hosts rather than resolving DNS and checking IP
+ranges, reusing `config.py`'s pre-existing `allowed_clone_hosts` -- plus
+`clone_repo`, `--depth 1` with a subprocess timeout and a post-clone size cap
+since git has no pre-clone size guarantee to check), `indexing/jobs.py`
+(`enqueue_job`/`claim_next_job` via `FOR UPDATE SKIP LOCKED`/`heartbeat`/
+`reclaim_stale_jobs`/`complete_job`/`fail_job`), `indexing/worker.py`
+(`process_one_job`, a heartbeat thread on its own connection since psycopg
+connections aren't safe across threads, `run_worker` with a `--once` mode for
+deterministic tests), `api/app.py` (`POST /v1/repos`, `GET /v1/repos/{slug}/
+jobs/{job_id}` -- the layout's first `api/` code), `codeqa worker` CLI command.
+39 new tests, 310 total green. Verified for real, not just against local
+fixtures: a genuine public GitHub repo (`octocat/Hello-World`) cloned,
+indexed, and marked `ready` with its real HEAD SHA recorded, both through
+`safe_clone` directly and through the full register→enqueue→`process_one_job`
+path -- literally the phase's "done when" bar. The worker-restart claim is
+tested the same way: a job is claimed, its heartbeat forced stale (simulating
+a dead worker), reclaimed back to `queued`, then completed by a *fresh*
+`process_one_job` call.
 
 ---
 

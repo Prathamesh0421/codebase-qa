@@ -1068,6 +1068,34 @@
       <dd>"A live SSE endpoint (Phase 14) faces the identical choice — true pre-render suppression there means buffering server-side before the first byte goes out. Same trade, same honest cost, whichever surface does it."</dd>
     </dl>
   </div>
+
+  <div class="decision">
+    <h3>SSRF guard: an allowlist, not DNS resolution and IP-range checks</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>Server-side cloning of a user-supplied git URL is a classic SSRF surface — the URL could point at <code>169.254.169.254</code> or an internal service instead of a real public repo.</dd>
+      <dt>Options</dt>
+      <dd>Resolve the hostname and reject any resolved IP that's private, loopback, or link-local; or reject any host that isn't on a small allowlist of known public git-hosting domains.</dd>
+      <dt>Decision</dt>
+      <dd>The allowlist. <code>config.py</code>'s <code>allowed_clone_hosts</code> field already existed from the Phase 0 scaffold, defaulting to <code>github.com</code>/<code>gitlab.com</code>/<code>bitbucket.org</code> — <code>validate_clone_url</code> just needed to enforce it. No DNS resolution happens at all; a URL whose host isn't on the list is rejected before any network call.</dd>
+      <dt class="k-give">Gave up</dt>
+      <dd>Support for cloning from an arbitrary self-hosted git server out of the box. Accepted: the allowlist is a config field, not a hardcoded constant, so a self-hosted deployment adds its own host explicitly rather than the guard silently trusting anything that isn't obviously private.</dd>
+      <dt class="k-ask">If asked</dt>
+      <dd>"An IP-range check has to resolve DNS and then worry about the resolved address changing between the check and the actual clone — a TOCTOU-shaped problem. An allowlist sidesteps it entirely: the question isn't 'what IP does this resolve to right now,' it's 'is this a host we've decided to trust,' which doesn't need resolving at all."</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>The heartbeat thread gets its own database connection</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>A running job's heartbeat needs to tick on an interval while <code>index_repo</code> runs synchronously and can take minutes — a background thread is the obvious shape.</dd>
+      <dt>Decision</dt>
+      <dd>The heartbeat thread opens its own <code>psycopg.connect()</code>, separate from the worker's main connection. A psycopg <code>Connection</code> is not safe to use concurrently from two threads, and the main thread is mid-way through a long sequence of <code>index_repo</code> queries at the exact moment the heartbeat thread would otherwise be issuing its own on the same connection.</dd>
+      <dt class="k-ask">If asked</dt>
+      <dd>"Sharing one connection across the heartbeat thread and the indexing work looks like it would work in a quick test, because SQLite-style single-writer semantics make people expect a connection object to just serialize concurrent use. psycopg doesn't guarantee that, and the failure mode — interleaved protocol state between two threads issuing queries at once — is exactly the kind of thing that wouldn't show up until it did, unpredictably, under real timing."</dd>
+    </dl>
+  </div>
 </section>
 
 <!-- ============================================================ 06 -->
@@ -1665,6 +1693,51 @@
   response is actually flagged through the real <code>codeqa ask</code>
   wiring — both the direct path and <code>--agent</code> — not just at the
   unit level. 271 tests green.</p>
+
+  <h3>Phase 12 — Ingestion and the job worker <span class="phase-status done">Done</span></h3>
+  <p>
+    Everything up to this phase indexed a repo the CLI already had checked
+    out locally. "Any repo, safely" means the server can fetch one itself
+    from a URL a user supplies — which introduces a risk nothing before this
+    phase had: fetching, not just parsing, untrusted input.
+    <code>indexing/clone.py</code> splits that into an SSRF guard
+    (<code>validate_clone_url</code> — see "SSRF guard: an allowlist, not DNS
+    resolution" in Decisions) and the actual clone mechanics
+    (<code>clone_repo</code> — <code>--depth 1</code>, a subprocess timeout,
+    a post-clone size check since git has no pre-clone size guarantee to
+    enforce). <code>indexing/jobs.py</code> is the queue itself, built
+    directly on the <code>index_jobs</code> table Phase 1 already shipped:
+    <code>FOR UPDATE SKIP LOCKED</code> claiming, a heartbeat, and
+    <code>reclaim_stale_jobs</code> — the literal mechanism behind "the job
+    survives a worker restart."
+  </p>
+
+  <h4>Two config fields from Phase 0 turned out to already anticipate this phase</h4>
+  <p>
+    <code>config.py</code>'s scaffold already had <code>clone_max_mb</code>,
+    <code>clone_timeout_seconds</code>, and <code>allowed_clone_hosts</code>
+    sitting unused since Phase 0 — including the exact allowlist
+    (<code>github.com</code>, <code>gitlab.com</code>, <code>bitbucket.org</code>)
+    this phase's SSRF guard needed. Worth noticing before designing a
+    guard from scratch: the simpler, more auditable allowlist approach was
+    already the implied design, not something invented mid-phase.
+  </p>
+
+  <p><strong>Results:</strong> 39 new tests, 310 total green.
+  <code>indexing/clone.py</code>, <code>jobs.py</code>, and
+  <code>worker.py</code>; the first real routes in <code>api/</code>
+  (<code>POST /v1/repos</code>, <code>GET /v1/repos/{slug}/jobs/{job_id}</code>);
+  a <code>codeqa worker</code> CLI command. Verified for real, not only
+  against local fixtures: a genuine public GitHub repo
+  (<code>octocat/Hello-World</code>) cloned, indexed, and marked
+  <code>ready</code> with its real HEAD SHA recorded, through both
+  <code>safe_clone</code> directly and the full
+  register→enqueue→<code>process_one_job</code> path — the phase's literal
+  "done when" bar. Worker-restart survival is tested the same way a claim
+  is proven, not assumed: claim a job, force its heartbeat stale, reclaim it
+  back to <code>queued</code>, then confirm a <em>fresh</em>
+  <code>process_one_job</code> call — simulating a different worker process
+  — completes it.</p>
 </section>
 
 <!-- ============================================================ 07 -->
@@ -2651,6 +2724,9 @@
     <li><strong>No load testing exists at any layer.</strong> Every performance-shaped claim in this document (indexing time, traversal query bounds) is architectural reasoning from one mid-size repo (Flask, 446 chunks), not a benchmark. Real latency numbers arrive with Phase 14's observability work.</li>
     <li><strong>The agent retry loop is measurably redundant with <code>hybrid_graph</code>.</strong> It's a real recall win under naive/hybrid but adds only noise once call-graph expansion already recovered everything reachable — two mechanisms for the same gap, and whichever runs first captures most of the benefit. Kept because a repo where bounded expansion doesn't reach far enough is a real, not hypothetical, case it still helps on.</li>
     <li><strong>Every agent-pipeline test uses a mocked LLM.</strong> No live API key exists in this environment (same honesty boundary as Phases 5/8/9). <code>trace</code>'s sufficiency judgment has never been exercised against a real model's actual reasoning — only against hand-scripted <code>SUFFICIENT</code>/<code>INSUFFICIENT</code> responses. Whether a real LLM reliably produces the expected two-keyword format, and judges sufficiency well, is untested.</li>
+    <li><strong>The API has no auth or rate limiting yet.</strong> <code>POST /v1/repos</code> and the job-status route are unauthenticated, and a connection is opened per request rather than pooled. Deliberately deferred to Phase 14 ("hardening"), not an oversight — stated here so it isn't mistaken for one.</li>
+    <li><strong>Re-indexing a git_url repo re-clones from scratch.</strong> The worker wipes any existing checkout under <code>clone_workdir</code> and clones fresh every time rather than fetching incrementally. Correct, but not the fast path — Phase 13's incremental re-index is what replaces this with a real diff against <code>last_indexed_sha</code>.</li>
+    <li><strong>The SSRF guard is an allowlist, not a general defense.</strong> Only <code>github.com</code>/<code>gitlab.com</code>/<code>bitbucket.org</code> can be cloned from out of the box. A self-hosted git server needs its host added to <code>allowed_clone_hosts</code> explicitly — a deliberate default-deny, not a gap, but worth stating precisely rather than implying broader coverage.</li>
   </ul>
 </section>
 
