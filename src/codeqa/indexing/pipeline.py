@@ -39,7 +39,7 @@ from codeqa.indexing.walker import walk_repo
 from codeqa.languages import LanguageSpec, detect_language
 
 
-def _blob_sha(content: bytes) -> str:
+def blob_sha(content: bytes) -> str:
     """git's own blob hashing: sha1("blob {len}\\0" + content).
 
     Verified against a real `git hash-object` call before writing this
@@ -96,7 +96,7 @@ def index_repo(
                     path=str(rel_path),
                     language=spec.name,
                     tier=spec.tier,
-                    blob_sha=_blob_sha(content),
+                    blob_sha=blob_sha(content),
                     size_bytes=len(content),
                     chunks=chunks,
                     spec=spec,

@@ -44,6 +44,12 @@ class IndexStats:
     call_edges_unresolved: int = 0
     duration_seconds: float = 0.0
     errors: list[tuple[str, str]] = field(default_factory=list)
+    # Populated only by incremental_index_repo (Phase 13) -- always 0 from
+    # the full pipeline, which doesn't have the concept of "unchanged".
+    files_unchanged: int = 0
+    files_removed: int = 0
+    chunks_preserved: int = 0
+    chunks_removed: int = 0
 
 
 def register_repo(
@@ -139,30 +145,25 @@ def upsert_file(
         return cur.fetchone()[0]
 
 
-def replace_chunks(
+def insert_chunks(
     conn: psycopg.Connection,
     repo_id: int,
     file_id: int,
     chunks: list[Chunk],
     vectors: list[list[float]],
 ) -> list[int]:
-    """Delete a file's existing chunks and insert the freshly computed set.
+    """Insert chunks, touching nothing already there -- the primitive both
+    replace_chunks (delete-then-insert-everything) and Phase 13's
+    incremental path (insert only the genuinely new/changed ones, leaving
+    unrelated existing rows and their chunk_ids, and therefore their
+    call_edges, completely alone) build on.
 
-    Delete-then-insert rather than a smarter diff: this is the full-index
-    path (Phase 4), not incremental re-indexing (Phase 13). It makes
-    index_repo safely re-runnable -- re-indexing an unchanged repo replaces
-    each file's chunks with an identical set rather than duplicating them --
-    which matters for tests and for recovering from a partial prior run.
-
-    Returns the inserted ids, positionally matching `chunks` -- Phase 6's
-    call-graph extraction needs a real chunk_id to attribute each call site
-    to its caller, and this is the one place that assigns them. Returned as a
-    plain list rather than a dict keyed by Chunk: Chunk equality is
-    field-based, and nothing here needs to assume two distinct definitions
-    can never produce field-identical Chunk values.
+    Returns the inserted ids, positionally matching `chunks` -- callers that
+    need to attribute call sites to a caller chunk_id (Phase 6's extraction,
+    here and in pipeline.py) need a real id back, and this is the one place
+    that assigns them.
     """
     with conn.cursor() as cur:
-        cur.execute("DELETE FROM chunks WHERE repo_id = %s AND file_id = %s", (repo_id, file_id))
         ids: list[int] = []
         for chunk, vector in zip(chunks, vectors, strict=True):
             cur.execute(
@@ -180,6 +181,64 @@ def replace_chunks(
             )
             ids.append(cur.fetchone()[0])
     return ids
+
+
+def replace_chunks(
+    conn: psycopg.Connection,
+    repo_id: int,
+    file_id: int,
+    chunks: list[Chunk],
+    vectors: list[list[float]],
+) -> list[int]:
+    """Delete a file's existing chunks and insert the freshly computed set.
+
+    Delete-then-insert rather than a smarter diff: this is the full-index
+    path (Phase 4), not incremental re-indexing (Phase 13, which reuses
+    insert_chunks directly instead so a file's untouched chunks never get
+    new ids). It makes index_repo safely re-runnable -- re-indexing an
+    unchanged repo replaces each file's chunks with an identical set rather
+    than duplicating them -- which matters for tests and for recovering from
+    a partial prior run.
+    """
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM chunks WHERE repo_id = %s AND file_id = %s", (repo_id, file_id))
+    return insert_chunks(conn, repo_id, file_id, chunks, vectors)
+
+
+def delete_chunks_by_id(conn: psycopg.Connection, repo_id: int, chunk_ids: list[int]) -> None:
+    """Delete specific chunks by id -- cascades to any call_edges referencing
+    them as caller or callee (0001_init.sql's ON DELETE CASCADE), which is
+    exactly the intended cleanup: an edge pointing at a chunk that no longer
+    exists should not exist either.
+    """
+    if not chunk_ids:
+        return
+    with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM chunks WHERE repo_id = %s AND id = ANY(%s)", (repo_id, chunk_ids)
+        )
+
+
+def existing_chunks_by_content_sha(
+    conn: psycopg.Connection, repo_id: int, file_id: int
+) -> dict[str, list[int]]:
+    """content_sha -> chunk_id(s) for a file's currently-stored chunks --
+    the lookup Phase 13's incremental diff uses to tell "this exact chunk
+    already exists, keep its id" from "this is genuinely new content".
+    A list, not a single id: two distinct definitions can be byte-identical
+    (e.g. two trivially identical stub methods), and content_sha alone can't
+    tell them apart -- the caller pairs them up by consuming this list in
+    order rather than assuming uniqueness.
+    """
+    result: dict[str, list[int]] = {}
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT content_sha, id FROM chunks WHERE repo_id = %s AND file_id = %s",
+            (repo_id, file_id),
+        )
+        for content_sha, chunk_id in cur.fetchall():
+            result.setdefault(content_sha, []).append(chunk_id)
+    return result
 
 
 def mark_indexed(conn: psycopg.Connection, repo_id: int, commit_sha: str | None = None) -> None:

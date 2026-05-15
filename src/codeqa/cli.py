@@ -19,6 +19,7 @@ from codeqa.config import get_settings
 from codeqa.db import migrate as migrations
 from codeqa.grounding import ground_answer
 from codeqa.indexing.embeddings import build_embedder
+from codeqa.indexing.incremental import incremental_index_repo
 from codeqa.indexing.pipeline import index_repo
 from codeqa.indexing.store import RepoAlreadyExists, register_repo
 from codeqa.indexing.worker import run_worker
@@ -104,17 +105,21 @@ def index(
                 settings.embedding_model, settings.embedding_dim,
             )
             console.print(f"Registered [cyan]{slug}[/] (repo_id={repo_id})")
+            stats = index_repo(conn, repo_id, path, embedder)
         elif reindex:
             repo_id = row[0]
             console.print(f"Re-indexing [cyan]{slug}[/] (repo_id={repo_id})")
+            # incremental_index_repo degrades correctly to "index everything
+            # as new" when a repo has no prior files rows (a first index
+            # that never got past registration, say) -- always safe to use
+            # here, not just an optimization for the common case.
+            stats = incremental_index_repo(conn, repo_id, path, embedder)
         else:
             console.print(
                 f"[yellow]{slug} is already registered.[/] "
                 f"Pass --reindex to index it again."
             )
             raise typer.Exit(1)
-
-        stats = index_repo(conn, repo_id, path, embedder)
     except RepoAlreadyExists as exc:
         console.print(f"[bold red]{exc}[/]")
         raise typer.Exit(1) from exc
@@ -141,6 +146,14 @@ def index(
         console.print(f"  [yellow]{stats.files_failed} failed[/]")
         for file_path, error in stats.errors[:5]:
             console.print(f"    [dim]{file_path}: {error}[/]")
+    # Only ever nonzero from incremental_index_repo -- the full pipeline has
+    # no concept of "unchanged".
+    if stats.files_unchanged or stats.files_removed or stats.chunks_preserved:
+        console.print(
+            f"  [dim]{stats.files_unchanged} files unchanged, "
+            f"{stats.files_removed} removed, "
+            f"{stats.chunks_preserved} chunks preserved[/]"
+        )
 
 
 @app.command()

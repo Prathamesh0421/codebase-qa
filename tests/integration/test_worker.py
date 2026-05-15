@@ -114,6 +114,54 @@ class TestProcessOneJob:
             drop_repo_by_slug(conn, slug)
 
 
+class TestIncrementalJobKind:
+    def test_an_incremental_job_only_touches_what_actually_changed(
+        self, conn, settings, tmp_path, request
+    ):
+        slug = f"test-{request.node.name}".replace("[", "-").replace("]", "")[:60]
+        drop_repo_by_slug(conn, slug)
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "a.py").write_text("def helper():\n    return 1\n")
+        repo_id = register_repo(
+            conn, slug, "Test", "local_path", str(src), "BAAI/bge-small-en-v1.5", EMBEDDING_DIM
+        )
+        try:
+            enqueue_job(conn, repo_id, kind="full")
+            process_one_job(conn, settings)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM chunks WHERE repo_id = %s AND symbol_name = 'helper'",
+                    (repo_id,),
+                )
+                original_chunk_id = cur.fetchone()[0]
+
+            # Unchanged content -- an incremental job should report it as
+            # such and never touch the existing chunk_id.
+            enqueue_job(conn, repo_id, kind="incremental")
+            did_work = process_one_job(conn, settings)
+            assert did_work is True
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM chunks WHERE repo_id = %s AND symbol_name = 'helper'",
+                    (repo_id,),
+                )
+                assert cur.fetchone()[0] == original_chunk_id
+                cur.execute(
+                    """
+                    SELECT status, stats FROM index_jobs
+                     WHERE repo_id = %s ORDER BY id DESC LIMIT 1
+                    """,
+                    (repo_id,),
+                )
+                status, stats = cur.fetchone()
+            assert status == "succeeded"
+            assert stats["files_unchanged"] == 1
+        finally:
+            drop_repo_by_slug(conn, slug)
+
+
 class TestSurvivesAWorkerRestart:
     def test_a_reclaimed_job_completes_on_a_fresh_worker_call(self, conn, settings, local_repo_id):
         enqueue_job(conn, local_repo_id)

@@ -18,6 +18,7 @@ import psycopg
 from codeqa.config import Settings
 from codeqa.indexing.clone import CloneFailed, UnsafeCloneURL, check_disk_quota, safe_clone
 from codeqa.indexing.embeddings import build_embedder
+from codeqa.indexing.incremental import incremental_index_repo
 from codeqa.indexing.jobs import Job, claim_next_job, complete_job, fail_job, heartbeat
 from codeqa.indexing.jobs import reclaim_stale_jobs as _reclaim_stale_jobs
 from codeqa.indexing.pipeline import index_repo
@@ -57,10 +58,13 @@ def _run_job(conn: psycopg.Connection, job: Job, settings: Settings) -> None:
             # exist yet on a fresh install, before any repo has been cloned.
             base_workdir.mkdir(parents=True, exist_ok=True)
             check_disk_quota(base_workdir, settings.disk_min_free_mb)
-            # No incremental re-clone yet (Phase 13's job) -- a repeat job
-            # for this repo_id wipes and re-clones from scratch rather than
-            # fetching, which is correct but not the fast path Phase 13
-            # will replace it with.
+            # Still a fresh --depth 1 clone every time, even for an
+            # incremental job -- Phase 13 made re-EMBEDDING incremental,
+            # not re-CLONING. incremental_index_repo diffs blob_sha against
+            # what's stored in Postgres, which needs only the current
+            # checkout's content, not any git history -- so a shallow
+            # re-clone is sufficient and clone-bandwidth savings were never
+            # this phase's target. See indexing/incremental.py's docstring.
             shutil.rmtree(workdir, ignore_errors=True)
             commit_sha = safe_clone(
                 source_ref, workdir, settings.allowed_clone_hosts,
@@ -74,12 +78,16 @@ def _run_job(conn: psycopg.Connection, job: Job, settings: Settings) -> None:
             settings.embedding_provider, model, dim,
             settings.embedding_batch_size, settings.embedding_api_key,
         )
-        stats = index_repo(conn, job.repo_id, root, embedder)
+        if job.kind == "incremental":
+            stats = incremental_index_repo(conn, job.repo_id, root, embedder, commit_sha)
+        else:
+            stats = index_repo(conn, job.repo_id, root, embedder)
         complete_job(
             conn, job.id, job.repo_id, commit_sha,
             {
                 "files_indexed": stats.files_indexed,
                 "chunks_created": stats.chunks_created,
+                "files_unchanged": stats.files_unchanged,
                 "duration_seconds": stats.duration_seconds,
             },
         )
