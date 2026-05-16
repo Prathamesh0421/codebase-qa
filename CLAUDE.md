@@ -148,7 +148,28 @@ an impressive invented one.
   bar. Worker-restart survival tested the same way: claim a job, force its
   heartbeat stale (simulating a dead worker), reclaim it back to `queued`,
   confirm a *fresh* `process_one_job` call completes it.
-- Everything past Phase 12: not started.
+- **Phase 13 (incremental re-indexing): done and reviewed.**
+  `indexing/incremental.py` (`incremental_index_repo`). Two content-hash
+  diffs, no git commit-to-commit diffing: file-level (`blob_sha` vs
+  `files.blob_sha` already stored) and, within a changed file, chunk-level
+  (`content_sha` vs that file's existing chunks — an untouched sibling
+  definition keeps its exact `chunk_id`, so its `call_edges` are never
+  disturbed). Deliberately doesn't diff between two git commits — Phase 12's
+  `--depth 1` clones may not have an old SHA reachable to diff against by
+  re-index time, and blob-SHA-against-Postgres needs no history at all, only
+  the current checkout. Call graph is rebuilt fresh every run
+  (`resolve_and_persist`, untouched) rather than diffed — parsing is cheap
+  relative to embedding, and it means there's never a dangling edge to worry
+  about, since the edge table is always rebuilt from a complete, current
+  view of the repo. Wired into `codeqa index --reindex` and the worker's
+  `kind="incremental"` jobs. 16 new tests (7 integration, 9 pure-function
+  unit tests pinning the duplicate-content-hash pairing specifically), 327
+  total green. Verified twice: the integration suite asserts an untouched
+  sibling's `chunk_id` is byte-identical across a run, and the same thing
+  was independently confirmed by hand through the real `codeqa index
+  --reindex` CLI path (54516/54517 unchanged, only the touched function's
+  id moved).
+- Everything past Phase 13: not started.
 - **`tree-sitter` is pinned `>=0.25,<0.26`, and this pin is load-bearing.**
   0.26.0 segfaults the interpreter on Python 3.14.2 when reading
   `Node.start_point`/`end_point` during `QueryCursor.matches()` iteration on
@@ -324,6 +345,19 @@ Departures from the design doc, all agreed during review:
   a request. `POST /v1/repos` → job id + status endpoint + a durable worker
   polling `index_jobs` with heartbeats, so a dead worker's job is reclaimed
   rather than stuck in `running`. Postgres job table, not Celery.
+
+- **Incremental re-index diffs content hashes against Postgres, not two git
+  commits.** The obvious design — `git diff old_sha new_sha --name-status` as
+  a cheap candidate list, `blob_sha` as a backstop against false positives —
+  doesn't survive contact with Phase 12's `--depth 1` clones: a shallow
+  clone's old commit may not even be reachable to diff against by the time a
+  repo is re-indexed. Comparing the current checkout's `blob_sha` per file
+  against what's already stored in Postgres needs no git history at all —
+  sidesteps the shallow-clone problem entirely rather than working around
+  it, which is a stronger reason to prefer it than the false-positive one.
+  The call graph is rebuilt fresh every run rather than diffed — parsing is
+  cheap relative to embedding, and it's what keeps "an edge pointing at a
+  deleted chunk" from ever being a real state to handle.
 
 ## Invariants — do not violate
 

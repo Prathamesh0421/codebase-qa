@@ -529,7 +529,7 @@ a dead worker), reclaimed back to `queued`, then completed by a *fresh*
 
 ---
 
-## Phase 13 — Incremental re-indexing `[ ]`
+## Phase 13 — Incremental re-indexing `[x]`
 
 **Goal:** make the resume bullet true.
 
@@ -540,6 +540,29 @@ a dead worker), reclaimed back to `queued`, then completed by a *fresh*
 what happens to call edges pointing at deleted chunks.
 
 **Done when:** a one-file change re-embeds one file, asserted by test.
+
+**Built:** `indexing/incremental.py` (`incremental_index_repo`). Two diffs,
+both keyed on content hashes rather than a git commit-to-commit diff: file-level
+(current `blob_sha` vs `files.blob_sha` already stored -- decides unchanged /
+changed / added / removed) and, within a changed file, chunk-level
+(`content_sha` vs what that file's existing chunks already have -- a sibling
+definition that didn't change keeps its exact `chunk_id`, so its `call_edges`
+are never touched). Deliberately does *not* diff between two git commits:
+Phase 12's clones are `--depth 1`, so an old SHA may not be reachable to diff
+against by the time a repo is re-indexed -- blob-SHA-against-Postgres needs no
+git history at all, only the current checkout. The call graph is rebuilt fresh
+every run (`resolve_and_persist`, untouched, already deletes and re-inserts a
+repo's whole edge set) rather than diffed incrementally -- accepted because
+parsing is cheap relative to embedding, and it's what makes "what happens to
+edges pointing at a deleted chunk" a non-question: there's never a dangling
+edge, since the edge table is always rebuilt from a fresh, complete, current
+view of the repo's chunks. Wired into `codeqa index --reindex` (replacing the
+prior full-reindex-every-time behavior) and the worker's `kind="incremental"`
+jobs. 16 new tests (7 integration against real Postgres, 9 pure-function unit
+tests for the duplicate-content-hash edge case), 327 total green. The
+strongest assertion isn't a count -- it's that an untouched sibling
+definition's `chunk_id` is byte-identical before and after, checked directly,
+and verified a second time by hand through the real CLI path.
 
 ---
 
