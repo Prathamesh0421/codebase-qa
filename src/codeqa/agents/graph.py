@@ -15,6 +15,7 @@ exactly as well. This cycle is what actually earns LangGraph's place here.
 import psycopg
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from opentelemetry.context import Context
 
 from codeqa.agents.logic import route_after_trace
 from codeqa.agents.nodes import make_locate_node, make_synthesize_node, make_trace_node
@@ -30,11 +31,12 @@ def build_agent_graph(
     top_k: int,
     llm_model: str,
     llm_api_key: str | None,
+    parent_context: Context | None = None,
 ) -> CompiledStateGraph:
     g: StateGraph = StateGraph(AgentState)
-    g.add_node("locate", make_locate_node(conn, embedder, strategy, top_k))
-    g.add_node("trace", make_trace_node(llm_model, llm_api_key))
-    g.add_node("synthesize", make_synthesize_node(llm_model, llm_api_key))
+    g.add_node("locate", make_locate_node(conn, embedder, strategy, top_k, parent_context))
+    g.add_node("trace", make_trace_node(llm_model, llm_api_key, parent_context))
+    g.add_node("synthesize", make_synthesize_node(llm_model, llm_api_key, parent_context))
 
     g.add_edge(START, "locate")
     g.add_edge("locate", "trace")
