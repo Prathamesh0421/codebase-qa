@@ -1814,6 +1814,65 @@
   CLI path against a live Postgres instance: two sibling functions'
   <code>chunk_id</code>s (54516, 54517) held exactly steady across a
   re-index while only the third, actually-edited one changed.</p>
+
+  <h3>Phase 14a — Streaming query endpoint and tracing <span class="phase-status done">Done</span></h3>
+  <p>
+    Phase 14 split partway through. Its "done when" bar names exactly two
+    things — a query streaming end-to-end over HTTP, and one trace showing
+    up in Jaeger — while the phase's own goal bullets list six, including
+    API-key auth, a Redis rate limiter, and a query cache. Building three
+    pieces of unauthenticated production surface before the two-thing bar
+    they aren't needed for was even proven felt like exactly the kind of
+    unmeasured work this project's "no invented metrics" stance argues
+    against elsewhere. 14a is the bar; 14b (auth, rate limiting, cache,
+    degradation) is scheduled next as its own pass.
+  </p>
+  <p>
+    <code>api/app.py</code>'s <code>POST /v1/query</code> runs the same
+    locate → trace → synthesize graph as <code>codeqa ask --agent</code>
+    (Phase 10), unchanged, over HTTP instead of the terminal.
+    <code>sse-starlette</code>'s <code>EventSourceResponse</code> wraps a
+    plain sync generator; starlette drives it through
+    <code>iterate_in_threadpool</code>, which is what keeps the blocking
+    psycopg and litellm calls inside off the event loop without needing an
+    async rewrite of anything downstream. <code>GET /health</code> checks
+    Postgres (gates the status code — nothing works without it) and Redis
+    (reported but non-gating — a preview of the degrade-don't-fail stance
+    Phase 14b will take for real once caching and rate limiting exist to
+    degrade). <code>obs/tracing.py</code> and <code>obs/logging.py</code>
+    wire one <code>TracerProvider</code> (OTLP → the Jaeger already
+    running in <code>docker-compose.yml</code>) and structlog JSON tagged
+    with the active trace_id, both configured once at API startup.
+  </p>
+
+  <h4>The same node code serves two callers because spans are unconditional</h4>
+  <p>
+    <code>agents/nodes.py</code>'s locate/trace/synthesize functions open a
+    span every time they run, with no "is tracing configured" branch
+    anywhere in them. Before <code>configure_tracing()</code> runs — the
+    CLI path, or any test — OTel's default global tracer is a no-op, so
+    those spans are created and dropped for free. Once the API configures a
+    real provider at startup, the exact same code produces real,
+    Jaeger-visible spans. This is what let Phase 10's agent graph gain
+    tracing without a single line in <code>agents/graph.py</code> or
+    <code>agents/nodes.py</code> needing to know whether a terminal or an
+    HTTP request is driving it.
+  </p>
+
+  <p><strong>Results:</strong> 9 new tests (3 integration against real
+  Postgres with litellm mocked via the same <code>mock_response</code>
+  delegation pattern as Phase 10's agent-graph tests, 6 unit tests for the
+  tracing/logging wiring itself). 336 total green. Verified by hand against
+  real Flask (<code>flask-eval</code>) and a real Jaeger instance:
+  <code>curl</code>'d <code>/v1/query</code>, confirmed the SSE event
+  sequence (<code>progress</code> ×2, then <code>error</code> — no live LLM
+  key in this environment, the same standing constraint every earlier
+  phase's litellm calls have had), then queried Jaeger's own HTTP API and
+  confirmed one trace with <code>locate</code> and <code>trace</code>
+  correctly nested under a <code>query</code> span, itself nested under the
+  FastAPI-instrumented request span. See "OTel spans need an explicit
+  parent across a thread pool" in War stories for a real bug this
+  hand-verification caught that the integration test suite did not.</p>
 </section>
 
 <!-- ============================================================ 07 -->
@@ -2090,6 +2149,25 @@
       <dd>For the retry quality question: reran the same scenario under <code>naive</code> and <code>hybrid</code> instead of <code>hybrid_graph</code>, scoring recall with the eval harness's own <code>score()</code> function before and after the retry. The retry helped substantially under both (0.25→0.38, 0.12→0.38) — the earlier result wasn't "the retry is broken," it was "the retry is redundant with call-graph expansion specifically," a completely different and more precise finding. For the ordering bug: traced it to <code>merge_chunks</code> only ever promising accumulation order, which happened to equal display order in every case the tests covered (single locate attempt) and stopped being true the moment a real retry appended a second attempt's own primary-then-graph ordering after the first's.</dd>
       <dt>Lesson</dt>
       <dd>A green test suite proves the properties it encodes, not the properties that seem implied by the feature's name. "The retry edge fires" and "the retry edge helps" are different claims, and only the first one had a test. Running the real thing once, end to end, and actually reading what it printed — not just checking the exit code — is what surfaced both gaps, and it took less time than either bug would have cost to find later.</dd>
+    </dl>
+  </div>
+
+  <div class="story">
+    <span class="story-tag trap">TestClient passed clean; real uvicorn did not</span>
+    <h3>OTel spans need an explicit parent across a thread pool</h3>
+    <dl class="dl-grid">
+      <dt>Symptom</dt>
+      <dd>The very first version of <code>/v1/query</code> wrapped the whole SSE generator in <code>with tracer.start_as_current_span("query"):</code>. Against a real running uvicorn server, every query crashed with a logged OTel warning: <code>"Failed to detach context"</code> / <code>ValueError: Token ... was created in a different Context</code>. Against FastAPI's <code>TestClient</code>, the identical code ran clean — zero reproductions.</dd>
+      <dt>Root cause</dt>
+      <dd><code>sse-starlette</code>'s <code>EventSourceResponse</code> wraps a plain sync generator and starlette drives it via <code>iterate_in_threadpool</code>, which dispatches <em>each</em> <code>next()</code> call independently through <code>anyio.to_thread.run_sync</code> — nothing guarantees two consecutive calls land on the same OS thread. OTel's <code>attach()</code>/<code>detach()</code> hand out a <code>contextvars.Token</code> that is only valid to reset on the thread that created it. A span held open across a <code>yield</code> attaches on whichever thread ran the first call and gets detached on whichever thread happens to run a much later one — a mismatch the instant the thread pool reuses a worker. <code>TestClient</code>'s ASGI transport doesn't reproduce this because it doesn't exercise the same real thread-pool concurrency a live server does.</dd>
+      <dt>The obvious-looking fix that was still wrong</dt>
+      <dd>Narrowing the <code>attach()</code>/<code>detach()</code> window to wrap only each individual <code>next()</code> call stopped the crash. But inspecting the resulting traces in Jaeger directly showed a second, quieter problem: on one run, the <code>trace</code> span was parented directly under the HTTP request span instead of under the intended <code>query</code> span — ambient context propagation across this boundary is unreliable, not merely occasionally slow to raise.</dd>
+      <dt>Fix</dt>
+      <dd>Stop relying on ambient "current span" state entirely. <code>agents/nodes.py</code>'s node factories take an explicit <code>parent_context</code> parameter and pass it as <code>context=</code> to their own <code>start_as_current_span</code> calls. Each node's span still opens and closes within one synchronous call on one thread — self-contained regardless of which thread happens to run it, with no dependency on an outer wrapper having set anything up first.</dd>
+      <dt>Verified</dt>
+      <dd>Not just "no exception raised" — queried Jaeger's own HTTP API directly and checked span parent IDs in the response: <code>locate</code> and <code>trace</code> both correctly nested under <code>query</code>, itself nested under the FastAPI-instrumented request span, on every run after the fix.</dd>
+      <dt>Lesson</dt>
+      <dd>A test harness that doesn't reproduce a target environment's concurrency model can pass clean on a bug that only exists under real concurrency. And a fix that merely stops the crash isn't automatically the fix that produces correct behavior — the wrong-parent trace only surfaced by looking at the actual trace data, not by the absence of an error.</dd>
     </dl>
   </div>
 </section>
@@ -2778,6 +2856,56 @@
       </p>
     </div>
   </details>
+
+  <details>
+    <summary>Why SSE for /v1/query instead of WebSockets?</summary>
+    <div class="answer">
+      <p>
+        The data only flows one direction — server to client, tokens and
+        progress events — and the client never needs to send anything mid-
+        stream. WebSockets buy full duplex; nothing here uses the other
+        direction. SSE is plain HTTP, so it survives the proxies and load
+        balancers a WebSocket upgrade sometimes doesn't, auto-reconnects with
+        a last-event-id in the browser's native <code>EventSource</code>, and
+        needed no new library on the server: <code>sse-starlette</code> was
+        already a pinned dependency waiting for this phase.
+      </p>
+      <p>
+        The actual mechanism is a plain sync generator — the same
+        <code>locate → trace → synthesize</code> graph <code>codeqa ask
+        --agent</code> already drives in the terminal — wrapped in
+        <code>EventSourceResponse</code>. Starlette's
+        <code>iterate_in_threadpool</code> is what keeps the blocking
+        psycopg and litellm calls inside off the event loop, so nothing in
+        the retrieval or LLM path needed an async rewrite.
+      </p>
+    </div>
+  </details>
+
+  <details>
+    <summary>Why does agents/nodes.py take an explicit parent_context instead of just using OTel's current-span context?</summary>
+    <div class="answer">
+      <p>
+        Because ambient context breaks across the exact concurrency model
+        <code>/v1/query</code> uses. <code>iterate_in_threadpool</code>
+        dispatches every chunk of a streamed response through
+        <code>anyio.to_thread.run_sync</code> independently, with no
+        guarantee two calls share a thread. OTel's <code>attach()</code> /
+        <code>detach()</code> hand out a <code>contextvars.Token</code> valid
+        only on the thread that created it — a span held "current" across a
+        <code>yield</code> attaches on one worker thread and can be asked to
+        detach on a different one the moment the pool reuses a worker. That
+        reproduced as a real crash under live uvicorn and, after a narrower
+        fix, as a real wrong-parent trace — visible only by checking actual
+        span data in Jaeger, not by the absence of an exception. Passing
+        <code>parent_context</code> explicitly into each node's own
+        <code>start_as_current_span</code> call sidesteps ambient state
+        completely: a node's span still opens and closes within one
+        synchronous call on one thread, so it's correct regardless of which
+        thread happens to run it. Full account in War stories.
+      </p>
+    </div>
+  </details>
 </section>
 
 <!-- ============================================================ 09 -->
@@ -2800,7 +2928,7 @@
     <li><strong>No load testing exists at any layer.</strong> Every performance-shaped claim in this document (indexing time, traversal query bounds) is architectural reasoning from one mid-size repo (Flask, 446 chunks), not a benchmark. Real latency numbers arrive with Phase 14's observability work.</li>
     <li><strong>The agent retry loop is measurably redundant with <code>hybrid_graph</code>.</strong> It's a real recall win under naive/hybrid but adds only noise once call-graph expansion already recovered everything reachable — two mechanisms for the same gap, and whichever runs first captures most of the benefit. Kept because a repo where bounded expansion doesn't reach far enough is a real, not hypothetical, case it still helps on.</li>
     <li><strong>Every agent-pipeline test uses a mocked LLM.</strong> No live API key exists in this environment (same honesty boundary as Phases 5/8/9). <code>trace</code>'s sufficiency judgment has never been exercised against a real model's actual reasoning — only against hand-scripted <code>SUFFICIENT</code>/<code>INSUFFICIENT</code> responses. Whether a real LLM reliably produces the expected two-keyword format, and judges sufficiency well, is untested.</li>
-    <li><strong>The API has no auth or rate limiting yet.</strong> <code>POST /v1/repos</code> and the job-status route are unauthenticated, and a connection is opened per request rather than pooled. Deliberately deferred to Phase 14 ("hardening"), not an oversight — stated here so it isn't mistaken for one.</li>
+    <li><strong>The API has no auth, rate limiting, or cache yet.</strong> Every route — <code>POST /v1/repos</code>, the job-status route, and Phase 14a's own <code>POST /v1/query</code> and <code>GET /health</code> — is unauthenticated, any client can call it at any rate, and a connection is opened per request rather than pooled. Deliberately deferred to Phase 14b, not an oversight: Phase 14's own "done when" bar (a query streams end-to-end and shows as one trace in Jaeger) doesn't need any of the three, so they're built next as their own measured pass rather than ahead of the bar that would justify them.</li>
     <li><strong>Re-indexing a git_url repo re-clones from scratch.</strong> The worker wipes any existing checkout under <code>clone_workdir</code> and clones fresh every time rather than fetching incrementally. Correct, but not the fast path — Phase 13's incremental re-index is what replaces this with a real diff against <code>last_indexed_sha</code>.</li>
     <li><strong>The SSRF guard is an allowlist, not a general defense.</strong> Only <code>github.com</code>/<code>gitlab.com</code>/<code>bitbucket.org</code> can be cloned from out of the box. A self-hosted git server needs its host added to <code>allowed_clone_hosts</code> explicitly — a deliberate default-deny, not a gap, but worth stating precisely rather than implying broader coverage.</li>
     <li><strong>Incremental re-indexing only makes embedding cheap, not cloning or graph rebuild.</strong> A <code>git_url</code> repo still gets a full fresh <code>--depth 1</code> clone on every incremental run (Phase 12's clone behavior is unchanged), and the call graph is fully re-extracted and rebuilt from every currently-present file every time, not diffed. Only chunk-level embedding is genuinely incremental. Stated precisely because "incremental re-indexing" could otherwise imply more than this phase actually delivers.</li>

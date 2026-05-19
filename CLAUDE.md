@@ -169,7 +169,34 @@ an impressive invented one.
   was independently confirmed by hand through the real `codeqa index
   --reindex` CLI path (54516/54517 unchanged, only the touched function's
   id moved).
-- Everything past Phase 13: not started.
+- **Phase 14 split partway through.** Its "done when" bar names only two
+  things — an SSE query endpoint and a trace in Jaeger — while its goal
+  bullets list six, including auth, rate limiting, and a cache. Building
+  those before the bar they're not needed for was proving isn't measured
+  work, so the phase is now 14a (below, done) and 14b (auth/rate
+  limiting/cache/degradation, not started).
+- **Phase 14a (streaming query endpoint and tracing): done and reviewed.**
+  `api/app.py`'s `POST /v1/query` reuses the existing locate→trace→synthesize
+  graph (`agents/graph.py`) over HTTP instead of the terminal — `sse-starlette`'s
+  `EventSourceResponse` wraps a plain sync generator that starlette drives
+  via `iterate_in_threadpool`, keeping the blocking psycopg/litellm calls off
+  the event loop. `GET /health` checks Postgres (gates the status code) and
+  Redis (reported, doesn't gate — a preview of Phase 14b's degrade-don't-fail
+  stance). `obs/tracing.py` / `obs/logging.py` wire one `TracerProvider`
+  (OTLP → the Jaeger already in `docker-compose.yml`) and structlog JSON
+  tagged with the active trace_id; `agents/nodes.py`'s locate/trace/synthesize
+  spans are unconditional — a no-op tracer before `configure_tracing()` runs,
+  real once it has, which is what lets the same node code serve the CLI and
+  the API without either knowing about the other. 9 new tests (3 integration
+  against real Postgres with litellm mocked, 6 unit for the tracing/logging
+  wiring), 336 total green. Verified by hand against real Flask
+  (`flask-eval`) and a real Jaeger instance: `curl`'d `/v1/query`, confirmed
+  the SSE event sequence, then queried Jaeger's HTTP API directly and
+  confirmed one trace with `locate` and `trace` correctly nested under a
+  `query` span, itself nested under the FastAPI-instrumented request span.
+  See "OTel spans need an explicit parent across a thread pool" below for a
+  real bug this hand-verification caught that `TestClient` did not.
+- Everything past Phase 14a: not started.
 - **`tree-sitter` is pinned `>=0.25,<0.26`, and this pin is load-bearing.**
   0.26.0 segfaults the interpreter on Python 3.14.2 when reading
   `Node.start_point`/`end_point` during `QueryCursor.matches()` iteration on
@@ -358,6 +385,35 @@ Departures from the design doc, all agreed during review:
   The call graph is rebuilt fresh every run rather than diffed — parsing is
   cheap relative to embedding, and it's what keeps "an edge pointing at a
   deleted chunk" from ever being a real state to handle.
+
+- **OTel spans need an explicit parent across a thread pool, not ambient
+  "current span."** `POST /v1/query`'s SSE generator is a plain sync
+  function, driven by `sse-starlette` via starlette's
+  `iterate_in_threadpool`, which dispatches each `next()` call independently
+  through `anyio.to_thread.run_sync` — nothing guarantees two consecutive
+  calls land on the same OS thread, and a later call can land on a thread an
+  earlier, unrelated call already used. The first version wrapped the whole
+  generator in `with tracer.start_as_current_span("query"):`, spanning every
+  `yield` — OTel's `attach()`/`detach()` hand out a `contextvars.Token` valid
+  only to reset on the thread that created it, so this crashed
+  ("Token ... was created in a different Context") the moment the thread
+  pool reused a worker. A second attempt narrowed the `attach()`/`detach()`
+  window to wrap only each `next()` call, which stopped the crash but still
+  produced *wrong* span nesting on one run (a `trace` span parented directly
+  under the HTTP request span instead of under `query`) — evidence that
+  ambient-context propagation across this boundary is unreliable, not just
+  occasionally slow to crash. The fix that's actually correct: stop relying
+  on ambient context entirely. `agents/nodes.py`'s node factories take an
+  explicit `parent_context` parameter and pass it as `context=` to their own
+  `start_as_current_span` calls — each node's span still opens and closes
+  within one synchronous call on one thread (self-contained, no boundary to
+  cross), it just no longer depends on some outer wrapper having correctly
+  set ambient state first. Caught by testing against a **real running
+  uvicorn server**, not `TestClient` — a `TestClient` run of the identical
+  code never reproduced either failure, which is the specific reason this
+  bug would have shipped invisibly if verification had stopped at the
+  integration test suite. Confirmed fixed by querying Jaeger's own HTTP API
+  and checking span parent IDs directly, not just "no exception was raised."
 
 ## Invariants — do not violate
 

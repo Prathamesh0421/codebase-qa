@@ -566,20 +566,70 @@ and verified a second time by hand through the real CLI path.
 
 ---
 
-## Phase 14 — API surface and production hardening `[ ]`
+## Phase 14 — API surface and production hardening
 
-**Goal:** the production story.
+Split into two passes partway through, once it became clear the phase's own
+"done when" bar names only two things -- an SSE query endpoint and a trace
+in Jaeger -- while the goal bullets list six. Auth, rate limiting, and a
+query cache are real production surface, but building them before the bar
+they're not needed for was proving is exactly the kind of unmeasured,
+unverified work this project's own invariants (README "no invented
+metrics", CLAUDE.md's phase-by-phase discipline) argue against. 14a hits
+the stated bar; 14b is the remaining goal bullets, done next as their own
+pass.
 
-- `POST /v1/query` with SSE streaming; health endpoint.
-- API-key auth (hashed), Redis per-key token bucket, query cache.
-- Retries with backoff, graceful degradation, OTel spans per stage, structlog
-  JSON correlated by trace ID.
+### Phase 14a — Streaming query endpoint and tracing `[x]`
 
-**Concepts:** SSE vs WebSockets here; token bucket vs fixed window; what
-"graceful degradation" means concretely per failure mode; why cache keys need
-normalized questions *and* repo scope.
+- `POST /v1/query` with SSE streaming; `GET /health`.
+- OTel spans per pipeline stage, structlog JSON correlated by trace ID.
+
+**Concepts:** SSE vs WebSockets here; why a request span's children need an
+*explicit* parent instead of OTel's ambient "current span" once a sync
+generator is being driven through a thread pool.
 
 **Done when:** a query streams end-to-end and shows as one trace in Jaeger.
+
+**Built:** `api/app.py`'s `POST /v1/query` reuses `agents/graph.py`'s
+locate -> trace -> synthesize graph exactly as `codeqa ask --agent` does,
+over HTTP instead of the terminal -- `sse-starlette`'s `EventSourceResponse`
+wraps a plain sync generator (`_stream_query`), which starlette drives via
+`iterate_in_threadpool` so the blocking psycopg/litellm calls inside never
+block the event loop. `GET /health` checks Postgres (gates the status code)
+and Redis (reported, doesn't gate it -- a preview of the degrade-don't-fail
+stance Phase 14b's cache/rate-limit pass will take). `obs/tracing.py` /
+`obs/logging.py` wire one `TracerProvider` (OTLP -> the Jaeger already in
+`docker-compose.yml`) and structlog JSON tagged with the active trace_id,
+configured once at API startup; `agents/nodes.py`'s locate/trace/synthesize
+spans are unconditional (a no-op tracer before configuration, real once
+configured), which is what lets the *same* node code serve the CLI and the
+API without knowing which one is driving it.
+
+Real bug found and fixed by testing against a live uvicorn server instead
+of only `TestClient` -- see "OTel spans need an explicit parent across a
+thread pool" below. 9 new tests (3 integration against a real Postgres +
+mocked litellm, 6 unit for the tracing/logging wiring itself), 336 total
+green. Verified by hand against real Flask (`flask-eval`) and a real
+Jaeger instance: `curl`'d `/v1/query`, confirmed the SSE event sequence
+(`progress` x2, `error` -- no live LLM key in this environment, same
+standing constraint as every earlier phase's litellm calls), then queried
+Jaeger's HTTP API directly and confirmed one trace with `locate` and
+`trace` correctly nested under a `query` span, itself nested under the
+FastAPI-instrumented request span.
+
+### Phase 14b — Auth, rate limiting, cache, and degradation `[ ]`
+
+- API-key auth (hashed), Redis per-key token bucket, query cache.
+- Retries with backoff, graceful degradation for the remaining failure
+  modes (LLM down, Redis down).
+
+**Concepts:** token bucket vs fixed window; what "graceful degradation"
+means concretely per failure mode; why cache keys need normalized
+questions *and* repo scope.
+
+**Done when:** an unauthenticated or revoked-key request is rejected, a
+rate-limited client gets a clear 429 (not silently queued or dropped), and
+a cache hit skips retrieval and synthesis entirely (asserted on mocked call
+counts).
 
 ---
 
