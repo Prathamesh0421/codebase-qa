@@ -1,11 +1,7 @@
 """POST /v1/repos, POST /v1/query, and GET /health -- the api/ layer the
-layout has always planned for.
-
-Auth, rate limiting, and a query cache are deliberately still absent (split
-out to a follow-up pass): this phase's "done when" bar is narrower -- a
-query streams end-to-end over HTTP and shows as one trace in Jaeger -- and
-adding unauthenticated production surface area beyond that bar isn't free,
-so it's scoped to exactly what proves the bar.
+layout has always planned for. Every route except /health requires a
+bearer API key (Phase 14b); /v1/query additionally sits behind a per-key
+Redis rate limiter and a query result cache.
 
 A connection is opened and closed per request rather than pooled
 (psycopg_pool is an installed extra but unused here) -- the simplest thing
@@ -19,7 +15,7 @@ from typing import Literal
 import psycopg
 import redis
 import structlog
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 from opentelemetry import trace
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -29,6 +25,9 @@ from sse_starlette.sse import EventSourceResponse
 
 from codeqa.agents.graph import build_agent_graph
 from codeqa.agents.state import AgentState
+from codeqa.api.auth import ApiKeyRecord, InvalidApiKey, verify_api_key
+from codeqa.api.cache import CachedAnswer, QueryCache
+from codeqa.api.rate_limit import RateLimiter
 from codeqa.config import Settings, get_settings
 from codeqa.grounding import ground_answer
 from codeqa.indexing.clone import UnsafeCloneURL, validate_clone_url
@@ -49,6 +48,15 @@ FastAPIInstrumentor.instrument_app(app)
 _tracer = get_tracer(__name__)
 _log = structlog.get_logger()
 
+# Built once at process startup from whatever Settings were active at
+# import time, the same convention configure_tracing/configure_logging
+# above already use in this file -- redis.Redis manages its own connection
+# pool internally, so this isn't "one shared connection", it's one client
+# object reused across requests.
+_redis_client = redis.Redis.from_url(str(_settings.redis_url))
+_rate_limiter = RateLimiter(_redis_client)
+_query_cache = QueryCache(_redis_client, _settings.cache_ttl_seconds)
+
 
 def get_conn(settings: Settings = Depends(get_settings)):  # noqa: B008
     conn = psycopg.connect(settings.dsn)
@@ -56,6 +64,24 @@ def get_conn(settings: Settings = Depends(get_settings)):  # noqa: B008
         yield conn
     finally:
         conn.close()
+
+
+def require_api_key(
+    authorization: str | None = Header(None),
+    conn: psycopg.Connection = Depends(get_conn),  # noqa: B008
+) -> ApiKeyRecord:
+    # Doesn't distinguish "missing key" from "invalid key" from "revoked
+    # key" in the response -- all three collapse to one 401, since telling
+    # a caller precisely which way their key is wrong is a minor
+    # information leak for callers who don't already have a good key, and
+    # no benefit to callers who do.
+    if authorization is None or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="missing or malformed Authorization header")
+    plaintext = authorization.split(" ", 1)[1].strip()
+    try:
+        return verify_api_key(conn, plaintext)
+    except InvalidApiKey as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
 class CreateRepoRequest(BaseModel):
@@ -86,6 +112,7 @@ def create_repo(
     body: CreateRepoRequest,
     conn: psycopg.Connection = Depends(get_conn),  # noqa: B008
     settings: Settings = Depends(get_settings),  # noqa: B008
+    api_key: ApiKeyRecord = Depends(require_api_key),  # noqa: B008
 ) -> CreateRepoResponse:
     # Rejected here, not just later inside the worker: failing an obviously
     # unsafe URL at request time is a clearer signal to the caller than a
@@ -115,7 +142,10 @@ def create_repo(
 
 @app.get("/v1/repos/{slug}/jobs/{job_id}", response_model=JobStatusResponse)
 def get_job_status(
-    slug: str, job_id: int, conn: psycopg.Connection = Depends(get_conn)  # noqa: B008
+    slug: str,
+    job_id: int,
+    conn: psycopg.Connection = Depends(get_conn),  # noqa: B008
+    api_key: ApiKeyRecord = Depends(require_api_key),  # noqa: B008
 ) -> JobStatusResponse:
     with conn.cursor() as cur:
         cur.execute(
@@ -168,6 +198,27 @@ class QueryRequest(BaseModel):
     top_k: int | None = None
 
 
+def _replay_cached(cached: CachedAnswer):
+    """A cache hit skips retrieval and synthesis entirely -- no locate/trace
+    progress events, because neither node ran. The answer is replayed as a
+    single token event rather than split back into per-token chunks: the
+    granularity of the ORIGINAL stream isn't recoverable from the cached
+    string, and re-chunking it arbitrarily would misrepresent the second
+    request as having streamed live when it didn't.
+    """
+    yield {"event": "token", "data": cached.answer}
+    yield {
+        "event": "done",
+        "data": json.dumps(
+            {
+                "citations_dropped": cached.citations_dropped,
+                "chunks": cached.chunks,
+                "cached": True,
+            }
+        ),
+    }
+
+
 def _stream_query(
     conn: psycopg.Connection,
     repo_id: int,
@@ -176,6 +227,8 @@ def _stream_query(
     question: str,
     top_k: int,
     settings: Settings,
+    cache: QueryCache,
+    last_indexed_sha: str | None,
 ):
     """Runs the same locate -> trace -> synthesize graph as `codeqa ask
     --agent` (agents/graph.py), over HTTP instead of the terminal. A plain
@@ -222,7 +275,14 @@ def _stream_query(
         graph_max_nodes=settings.graph_max_nodes,
     )
     graph = build_agent_graph(
-        conn, embedder, strategy, top_k, settings.llm_model, settings.llm_api_key, parent_ctx
+        conn,
+        embedder,
+        strategy,
+        top_k,
+        settings.llm_model,
+        settings.llm_api_key,
+        parent_ctx,
+        settings.llm_max_retries,
     )
     state = AgentState(
         repo_id=repo_id, question=question, current_query=question,
@@ -269,21 +329,29 @@ def _stream_query(
     final_answer = "".join(answer_tokens)
     result = ground_answer(final_answer, final_chunks)
     log.info("query.done", chunk_count=len(final_chunks), citations_dropped=len(result.dropped))
+    citations_dropped = [c.raw for c in result.dropped]
+    chunk_payload = [
+        {
+            "citation": c.citation,
+            "score": c.score,
+            "symbol": c.qualified_name or c.symbol_name,
+        }
+        for c in final_chunks
+    ]
+    # Cached only on a clean completion -- the except branch above returns
+    # before reaching here, so a failed run is never cached as if it
+    # succeeded.
+    cache.set(
+        repo_id,
+        question,
+        last_indexed_sha,
+        CachedAnswer(
+            answer=final_answer, chunks=chunk_payload, citations_dropped=citations_dropped
+        ),
+    )
     yield {
         "event": "done",
-        "data": json.dumps(
-            {
-                "citations_dropped": [c.raw for c in result.dropped],
-                "chunks": [
-                    {
-                        "citation": c.citation,
-                        "score": c.score,
-                        "symbol": c.qualified_name or c.symbol_name,
-                    }
-                    for c in final_chunks
-                ],
-            }
-        ),
+        "data": json.dumps({"citations_dropped": citations_dropped, "chunks": chunk_payload}),
     }
 
 
@@ -292,10 +360,23 @@ def query(
     body: QueryRequest,
     conn: psycopg.Connection = Depends(get_conn),  # noqa: B008
     settings: Settings = Depends(get_settings),  # noqa: B008
+    api_key: ApiKeyRecord = Depends(require_api_key),  # noqa: B008
 ) -> EventSourceResponse:
+    # Rate limit is checked here, in the route function, before
+    # EventSourceResponse is ever constructed -- not inside _stream_query.
+    # Once SSE headers go out the response is committed to 200; a 429 has
+    # to be a real HTTP error response, raised before that point, or a
+    # rate-limited client would see a 200 stream carrying an "error" event
+    # instead of the 429 it actually needs to back off correctly.
+    if not _rate_limiter.allow(api_key.id, api_key.rate_limit_rpm):
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT id, embedding_model, embedding_dim FROM repos WHERE slug = %s",
+            """
+            SELECT id, embedding_model, embedding_dim, last_indexed_sha
+              FROM repos WHERE slug = %s
+            """,
             (body.repo_slug,),
         )
         row = cur.fetchone()
@@ -303,9 +384,25 @@ def query(
         raise HTTPException(
             status_code=404, detail=f"no repo registered with slug {body.repo_slug!r}"
         )
-    repo_id, embedding_model, embedding_dim = row
+    repo_id, embedding_model, embedding_dim, last_indexed_sha = row
     top_k = body.top_k or settings.retrieval_top_k
 
+    cached = _query_cache.get(repo_id, body.question, last_indexed_sha)
+    if cached is not None:
+        log = _log.bind(repo_id=repo_id)
+        log.info("query.cache_hit", question=body.question)
+        return EventSourceResponse(_replay_cached(cached))
+
     return EventSourceResponse(
-        _stream_query(conn, repo_id, embedding_model, embedding_dim, body.question, top_k, settings)
+        _stream_query(
+            conn,
+            repo_id,
+            embedding_model,
+            embedding_dim,
+            body.question,
+            top_k,
+            settings,
+            _query_cache,
+            last_indexed_sha,
+        )
     )

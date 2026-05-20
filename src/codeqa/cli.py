@@ -15,6 +15,7 @@ from rich.console import Console
 from codeqa.agents.graph import build_agent_graph
 from codeqa.agents.logic import sort_for_display
 from codeqa.agents.state import AgentState
+from codeqa.api.auth import create_api_key
 from codeqa.config import get_settings
 from codeqa.db import migrate as migrations
 from codeqa.grounding import ground_answer
@@ -32,6 +33,9 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+
+keys_app = typer.Typer(help="Manage API keys for the HTTP API.")
+app.add_typer(keys_app, name="keys")
 
 
 @app.command()
@@ -244,7 +248,13 @@ def _ask_direct(
     # with markup parsing left on.
     console.print()  # never glue onto whatever printed before this (progress bars, warnings)
     tokens = []
-    for token in synthesize(question, chunks, settings.llm_model, settings.llm_api_key):
+    for token in synthesize(
+        question,
+        chunks,
+        settings.llm_model,
+        settings.llm_api_key,
+        max_retries=settings.llm_max_retries,
+    ):
         console.print(token, end="", markup=False, highlight=False)
         tokens.append(token)
     console.print()
@@ -269,7 +279,13 @@ def _ask_agent(conn, embedder, strategy, repo_id: int, question: str, top_k: int
     visible) and the synthesize node's token-by-token output in one pass.
     """
     graph = build_agent_graph(
-        conn, embedder, strategy, top_k, settings.llm_model, settings.llm_api_key
+        conn,
+        embedder,
+        strategy,
+        top_k,
+        settings.llm_model,
+        settings.llm_api_key,
+        llm_max_retries=settings.llm_max_retries,
     )
     state = AgentState(
         repo_id=repo_id,
@@ -350,6 +366,31 @@ def worker(
         run_worker(conn, settings, once=once)
     finally:
         conn.close()
+
+
+@keys_app.command("create")
+def keys_create(
+    name: str = typer.Option(..., "--name", help="A label for this key, e.g. 'ci' or 'vscode'."),  # noqa: B008
+    rate_limit_rpm: int = typer.Option(  # noqa: B008
+        None, "--rate-limit-rpm", help="Override settings.rate_limit_rpm for this key."
+    ),
+) -> None:
+    """Issue a new API key. The plaintext is shown exactly once, here --
+    it is never stored and cannot be recovered later, only revoked and
+    replaced with a new key.
+    """
+    settings = get_settings()
+    conn = psycopg.connect(settings.dsn)
+    try:
+        created = create_api_key(conn, name, rate_limit_rpm or settings.rate_limit_rpm)
+    finally:
+        conn.close()
+
+    console.print(f"[green]API key created:[/] {created.name} (id={created.id})")
+    console.print(f"  [bold]{created.plaintext}[/]")
+    console.print(
+        "[yellow]This is shown once and cannot be retrieved again -- store it now.[/]"
+    )
 
 
 if __name__ == "__main__":

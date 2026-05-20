@@ -66,14 +66,20 @@ def synthesize(
     model: str,
     api_key: str | None = None,
     timeout: float = 60.0,
+    max_retries: int = 0,
 ) -> Iterator[str]:
     """Stream the answer token by token.
 
     Always a generator, even though a caller could pass stream=False to
-    litellm -- the CLI, the eventual SSE endpoint (Phase 14), and Phase 10's
+    litellm -- the CLI, the SSE endpoint (Phase 14), and Phase 10's
     synthesize node all want to consume tokens as they arrive, and a
     generator that yields one final string is a strict superset of a
     non-streaming call, not the other way around.
+
+    max_retries is litellm's own retry-on-transient-failure count
+    (settings.llm_max_retries), passed through rather than hand-rolled --
+    litellm already retries a streaming call before the first token is
+    yielded, so this is real backoff, not a no-op on the stream case.
     """
     messages = build_messages(question, chunks)
     response = litellm.completion(
@@ -82,6 +88,7 @@ def synthesize(
         api_key=api_key,
         timeout=timeout,
         stream=True,
+        max_retries=max_retries,
     )
     for chunk in response:
         delta = chunk.choices[0].delta.content

@@ -59,7 +59,12 @@ def make_locate_node(
     return locate
 
 
-def make_trace_node(model: str, api_key: str | None, parent_context: Context | None = None):
+def make_trace_node(
+    model: str,
+    api_key: str | None,
+    parent_context: Context | None = None,
+    max_retries: int = 0,
+):
     def trace(state: AgentState) -> dict:
         with _tracer.start_as_current_span("trace", context=parent_context) as span:
             messages = build_trace_messages(state.question, state.chunks)
@@ -67,7 +72,11 @@ def make_trace_node(model: str, api_key: str | None, parent_context: Context | N
             # graph, not prose shown to a user -- nothing benefits from
             # streaming it token by token the way the final answer does.
             response = litellm.completion(
-                model=model, messages=messages, api_key=api_key, stream=False
+                model=model,
+                messages=messages,
+                api_key=api_key,
+                stream=False,
+                max_retries=max_retries,
             )
             sufficient, next_query, reasoning = parse_trace_response(
                 response.choices[0].message.content, state.question
@@ -81,7 +90,12 @@ def make_trace_node(model: str, api_key: str | None, parent_context: Context | N
     return trace
 
 
-def make_synthesize_node(model: str, api_key: str | None, parent_context: Context | None = None):
+def make_synthesize_node(
+    model: str,
+    api_key: str | None,
+    parent_context: Context | None = None,
+    max_retries: int = 0,
+):
     def synthesize_node(state: AgentState) -> dict:
         # get_stream_writer(), not a return-value generator: LangGraph nodes
         # return a single state update, so streaming has to go out-of-band
@@ -94,7 +108,9 @@ def make_synthesize_node(model: str, api_key: str | None, parent_context: Contex
         with _tracer.start_as_current_span("synthesize", context=parent_context):
             writer = get_stream_writer()
             tokens = []
-            for token in synthesize(state.question, state.chunks, model, api_key):
+            for token in synthesize(
+                state.question, state.chunks, model, api_key, max_retries=max_retries
+            ):
                 writer(token)
                 tokens.append(token)
             return {"answer": "".join(tokens)}

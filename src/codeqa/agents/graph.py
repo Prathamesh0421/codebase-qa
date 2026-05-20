@@ -32,11 +32,17 @@ def build_agent_graph(
     llm_model: str,
     llm_api_key: str | None,
     parent_context: Context | None = None,
+    llm_max_retries: int = 0,
 ) -> CompiledStateGraph:
     g: StateGraph = StateGraph(AgentState)
     g.add_node("locate", make_locate_node(conn, embedder, strategy, top_k, parent_context))
-    g.add_node("trace", make_trace_node(llm_model, llm_api_key, parent_context))
-    g.add_node("synthesize", make_synthesize_node(llm_model, llm_api_key, parent_context))
+    g.add_node(
+        "trace", make_trace_node(llm_model, llm_api_key, parent_context, llm_max_retries)
+    )
+    g.add_node(
+        "synthesize",
+        make_synthesize_node(llm_model, llm_api_key, parent_context, llm_max_retries),
+    )
 
     g.add_edge(START, "locate")
     g.add_edge("locate", "trace")
