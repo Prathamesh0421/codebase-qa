@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from codeqa.api.app import app, get_settings
+from codeqa.api.auth import create_api_key
 from codeqa.config import Settings
 
 pytestmark = pytest.mark.integration
@@ -52,7 +53,24 @@ def drop_repo_by_slug(conn, slug: str) -> None:
 
 
 @pytest.fixture
-def client():
+def api_key(conn):
+    # A high per-test rate limit -- this file exercises routes, not the
+    # rate limiter itself (see test_rate_limit.py for that), so the limit
+    # is set generously to never accidentally trip during a test.
+    created = create_api_key(conn, "test-key", rate_limit_rpm=10_000)
+    yield created
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM api_keys WHERE id = %s", (created.id,))
+    conn.commit()
+
+
+@pytest.fixture
+def client(api_key):
+    return TestClient(app, headers={"Authorization": f"Bearer {api_key.plaintext}"})
+
+
+@pytest.fixture
+def anonymous_client():
     return TestClient(app)
 
 
@@ -186,3 +204,34 @@ class TestJobStatus:
     def test_unknown_repo_slug_returns_404(self, client):
         response = client.get("/v1/repos/does-not-exist/jobs/1")
         assert response.status_code == 404
+
+
+class TestAuth:
+    def test_no_authorization_header_is_rejected(self, anonymous_client):
+        response = anonymous_client.post(
+            "/v1/repos",
+            json={
+                "slug": "whatever", "display_name": "Test",
+                "source_kind": "local_path", "source_ref": "/tmp",
+            },
+        )
+        assert response.status_code == 401
+
+    def test_a_malformed_authorization_header_is_rejected(self, anonymous_client):
+        response = anonymous_client.get(
+            "/v1/repos/does-not-exist/jobs/1", headers={"Authorization": "not-a-bearer-token"}
+        )
+        assert response.status_code == 401
+
+    def test_an_unknown_key_is_rejected(self, anonymous_client):
+        response = anonymous_client.get(
+            "/v1/repos/does-not-exist/jobs/1",
+            headers={"Authorization": "Bearer cq_not-a-real-key"},
+        )
+        assert response.status_code == 401
+
+    def test_health_needs_no_authorization(self, anonymous_client):
+        # Infra probes (load balancers, orchestrators) can't be expected to
+        # carry an API key -- /health is deliberately the one open route.
+        response = anonymous_client.get("/health")
+        assert response.status_code == 200

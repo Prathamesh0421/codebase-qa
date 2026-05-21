@@ -12,8 +12,9 @@ event stream carrying locate/trace progress, streamed tokens, and a final
 grounding-aware done event.
 """
 
+import json
 import os
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import litellm as real_litellm
 import psycopg
@@ -22,10 +23,12 @@ from fastapi.testclient import TestClient
 from pgvector.psycopg import register_vector
 
 from codeqa.api.app import app, get_settings
+from codeqa.api.auth import create_api_key
 from codeqa.config import Settings
 from codeqa.indexing.embeddings import LocalEmbedder
 from codeqa.indexing.pipeline import index_repo
 from codeqa.indexing.store import register_repo
+from codeqa.retrieval.strategy import get_strategy
 
 pytestmark = pytest.mark.integration
 
@@ -49,22 +52,39 @@ def override_settings():
 
 
 @pytest.fixture
-def client():
-    return TestClient(app)
-
-
-@pytest.fixture(scope="module")
-def embedder():
-    return LocalEmbedder("BAAI/bge-small-en-v1.5", dimension=EMBEDDING_DIM, batch_size=16)
-
-
-@pytest.fixture
 def conn():
     connection = psycopg.connect(_dsn())
     register_vector(connection)
     yield connection
     connection.rollback()
     connection.close()
+
+
+@pytest.fixture
+def api_key(conn):
+    # A generous per-test limit -- this file mostly exercises query
+    # behavior, not the limiter itself (see test_rate_limit.py), except for
+    # the one test that deliberately creates its own low-limit key.
+    created = create_api_key(conn, "test-key", rate_limit_rpm=10_000)
+    yield created
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM api_keys WHERE id = %s", (created.id,))
+    conn.commit()
+
+
+@pytest.fixture
+def client(api_key):
+    return TestClient(app, headers={"Authorization": f"Bearer {api_key.plaintext}"})
+
+
+@pytest.fixture
+def anonymous_client():
+    return TestClient(app)
+
+
+@pytest.fixture(scope="module")
+def embedder():
+    return LocalEmbedder("BAAI/bge-small-en-v1.5", dimension=EMBEDDING_DIM, batch_size=16)
 
 
 def drop_repo_by_slug(conn, slug: str) -> None:
@@ -172,8 +192,84 @@ class TestQueryEndpoint:
         )
         assert streamed == "It hashes the password and compares."
 
-        import json as jsonlib
-
-        done_payload = jsonlib.loads(events[-1][1])
+        done_payload = json.loads(events[-1][1])
         assert done_payload["citations_dropped"] == []
         assert len(done_payload["chunks"]) > 0
+
+    def test_no_authorization_header_is_rejected(self, anonymous_client):
+        response = anonymous_client.post(
+            "/v1/query", json={"repo_slug": "does-not-exist", "question": "anything"}
+        )
+        assert response.status_code == 401
+
+    def test_a_rate_limited_key_gets_a_real_429_not_an_sse_error_event(
+        self, conn, indexed_repo
+    ):
+        # rate_limit_rpm=1: bucket holds exactly one token, so the first
+        # call succeeds and the second is refused outright. Checked
+        # BEFORE the repo lookup and BEFORE EventSourceResponse is ever
+        # constructed -- a rate-limited client gets a normal JSON error
+        # response with a real status code, not a 200 stream carrying an
+        # "error" SSE event, because the client needs the HTTP status
+        # itself to know to back off.
+        created = create_api_key(conn, "low-limit-key", rate_limit_rpm=1)
+        low_limit_client = TestClient(
+            app, headers={"Authorization": f"Bearer {created.plaintext}"}
+        )
+        try:
+            with _mock_completion("SUFFICIENT", "first answer"):
+                first = low_limit_client.post(
+                    "/v1/query", json={"repo_slug": indexed_repo, "question": "q1"}
+                )
+            assert first.status_code == 200
+
+            second = low_limit_client.post(
+                "/v1/query", json={"repo_slug": indexed_repo, "question": "q2"}
+            )
+            assert second.status_code == 429
+            # A real JSON error body, not text/event-stream -- proves this
+            # never reached EventSourceResponse at all.
+            assert second.headers["content-type"].startswith("application/json")
+            assert "rate limit" in second.json()["detail"]
+        finally:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM api_keys WHERE id = %s", (created.id,))
+            conn.commit()
+
+    def test_a_cache_hit_skips_retrieval_entirely(self, client, indexed_repo):
+        # The load-bearing assertion: mock.call_count == 1 across two
+        # IDENTICAL requests. A weaker test (asserting the second
+        # response's body matches the first) would also pass if the cache
+        # did nothing and the pipeline just happened to be deterministic --
+        # this is the one property that can only be true if retrieval
+        # genuinely ran once, not twice.
+        real_strategy = get_strategy("naive", graph_max_depth=2, graph_max_nodes=40)
+        counting_retrieve = MagicMock(wraps=real_strategy.retrieve)
+        real_strategy.retrieve = counting_retrieve
+
+        question = "how is a password verified, cache test"
+        with patch("codeqa.api.app.get_strategy", return_value=real_strategy):
+            with _mock_completion("SUFFICIENT", "cached-eligible answer"):
+                first = client.post(
+                    "/v1/query", json={"repo_slug": indexed_repo, "question": question}
+                )
+            assert first.status_code == 200
+            assert counting_retrieve.call_count == 1
+
+            # Second request: litellm is NOT mocked here at all -- if the
+            # cache doesn't short-circuit before synthesis, this call would
+            # hit the real (absent) LLM and fail loudly, which is itself a
+            # useful failure mode, but the direct assertion is the call
+            # count below.
+            second = client.post(
+                "/v1/query", json={"repo_slug": indexed_repo, "question": question}
+            )
+            assert second.status_code == 200
+            assert counting_retrieve.call_count == 1
+
+        second_events = _parse_sse(second.text)
+        done_payload = json.loads(
+            next(data for event, data in second_events if event == "done")
+        )
+        assert done_payload["cached"] is True
+        assert "progress" not in [e for e, _ in second_events]
