@@ -1873,6 +1873,72 @@
   FastAPI-instrumented request span. See "OTel spans need an explicit
   parent across a thread pool" in War stories for a real bug this
   hand-verification caught that the integration test suite did not.</p>
+
+  <h3>Phase 14b — Auth, rate limiting, cache, and degradation <span class="phase-status done">Done</span></h3>
+  <p>
+    The rest of Phase 14's goal bullets, built as their own pass once 14a
+    had proven the bar it was actually scoped to. <code>api/auth.py</code>
+    issues SHA-256-hashed API keys over the <code>api_keys</code> schema
+    that had existed unused since Phase 0's migration — plaintext shown
+    exactly once, at <code>codeqa keys create</code> time, never persisted.
+    <code>api/rate_limit.py</code>'s <code>RateLimiter</code> is a Redis
+    token bucket run as a single Lua <code>EVAL</code> script, so the
+    read-refill-consume-write sequence is atomic against two concurrent
+    requests for the same key — a plain Python GET-then-SET would race them
+    into both reading the same starting token count. <code>api/cache.py</code>'s
+    <code>QueryCache</code> keys on <code>(repo_id, normalized_question,
+    last_indexed_sha)</code>: repo scope alone collides two different repos
+    asked the same question, and question text alone collides a question
+    against stale content after a re-index — the sha in the key makes a
+    re-index a natural cache bust with no invalidation logic required.
+  </p>
+
+  <h4>A 429 can't be an SSE event — it has to happen before the stream starts</h4>
+  <p>
+    Once <code>EventSourceResponse</code> sends its first byte, the HTTP
+    response is committed to <code>200</code>; there's no way to change the
+    status code mid-stream. That's why <code>/v1/query</code>'s rate-limit
+    check runs in the route function itself, before the cache lookup and
+    before the streaming generator is ever constructed — a rate-limited
+    client needs the real <code>429</code> its retry/backoff logic checks
+    for, not a <code>200</code> stream carrying an <code>"error"</code>
+    event that looks, at the transport level, exactly like success.
+  </p>
+
+  <h4>Both Redis integrations fail open, and the cost of that is stated, not hidden</h4>
+  <p>
+    A Redis outage degrades <code>/v1/query</code> to unmetered, uncached
+    traffic — never a 503. For a Q&A service, availability is worth more
+    than strict abuse enforcement, but the honest tradeoff is real: a Redis
+    outage genuinely removes rate-limit protection for as long as it lasts.
+    Both <code>RateLimiter.allow</code> and <code>QueryCache.get</code>/<code>set</code>
+    catch <code>redis.RedisError</code> specifically — not a bare
+    <code>except Exception</code> — and this was verified against a
+    <em>genuinely unreachable</em> Redis (a real connection attempt to a
+    closed port), not a mock standing in for one.
+  </p>
+
+  <p><strong>Results:</strong> 27 new tests, 360 total green.
+  <code>test_rate_limit.py</code> and <code>test_cache.py</code> run
+  against a real Redis rather than a fake — specifically because
+  <code>test_tokens_genuinely_refill_after_the_capacity_is_exhausted</code>
+  drains a real bucket, sleeps past one real refill interval, and asserts
+  exactly one more request succeeds. A refill implementation that silently
+  truncates a fractional token to zero would pass any burst-then-refuse
+  test forever and only fail this one. The two tests the phase's own "done
+  when" bar names directly: a rate-limited request returns
+  <code>429</code> with <code>content-type: application/json</code> (not
+  <code>text/event-stream</code>), and a cache hit is proven by
+  <code>mock.call_count == 1</code> on the retrieval strategy across two
+  identical requests — a response-body comparison alone would also pass if
+  the cache did nothing and the pipeline just happened to be deterministic.
+  Verified by hand against a live server and real Flask: a real key created
+  through <code>codeqa keys create</code>'s own module, no-header and
+  bad-key requests both a real <code>401</code>, <code>GET /health</code>
+  confirmed to need no key at all, and a <code>rate_limit_rpm=2</code> key
+  let exactly two requests through (<code>200 text/event-stream</code>)
+  before a genuine third got <code>429 application/json</code> with
+  <code>{"detail": "rate limit exceeded"}</code>.</p>
 </section>
 
 <!-- ============================================================ 07 -->
@@ -2925,10 +2991,12 @@
     <li><strong>No numbers claimed until measured.</strong> No precision@k or latency figure goes in the README or on a résumé before the harness produces it. A modest measured number is defensible; an impressive invented one collapses on the second question.</li>
     <li><strong>The labeled set is small and single-repo.</strong> 25 questions against Flask alone. Real, but not enough to generalize a percentage beyond "the direction of the effect held on the repo tested" — a second anchor repo would be needed before quoting these numbers as broadly predictive.</li>
     <li><strong>The labeled set never tests hybrid's actual purpose.</strong> All 25 questions are natural-language paraphrases with no literal identifiers in the query text — so hybrid's exact-symbol component, built specifically for "where is <code>dispatch_request</code> defined"-style questions, was never exercised. Its measured zero lift is honest for this set and not evidence it's unnecessary in general.</li>
-    <li><strong>No load testing exists at any layer.</strong> Every performance-shaped claim in this document (indexing time, traversal query bounds) is architectural reasoning from one mid-size repo (Flask, 446 chunks), not a benchmark. Real latency numbers arrive with Phase 14's observability work.</li>
+    <li><strong>No load testing exists at any layer.</strong> Every performance-shaped claim in this document (indexing time, traversal query bounds) is architectural reasoning from one mid-size repo (Flask, 446 chunks), not a benchmark. Phase 14a gives the system real tracing to measure with; no load test has actually been run yet to produce a latency number from it.</li>
     <li><strong>The agent retry loop is measurably redundant with <code>hybrid_graph</code>.</strong> It's a real recall win under naive/hybrid but adds only noise once call-graph expansion already recovered everything reachable — two mechanisms for the same gap, and whichever runs first captures most of the benefit. Kept because a repo where bounded expansion doesn't reach far enough is a real, not hypothetical, case it still helps on.</li>
     <li><strong>Every agent-pipeline test uses a mocked LLM.</strong> No live API key exists in this environment (same honesty boundary as Phases 5/8/9). <code>trace</code>'s sufficiency judgment has never been exercised against a real model's actual reasoning — only against hand-scripted <code>SUFFICIENT</code>/<code>INSUFFICIENT</code> responses. Whether a real LLM reliably produces the expected two-keyword format, and judges sufficiency well, is untested.</li>
-    <li><strong>The API has no auth, rate limiting, or cache yet.</strong> Every route — <code>POST /v1/repos</code>, the job-status route, and Phase 14a's own <code>POST /v1/query</code> and <code>GET /health</code> — is unauthenticated, any client can call it at any rate, and a connection is opened per request rather than pooled. Deliberately deferred to Phase 14b, not an oversight: Phase 14's own "done when" bar (a query streams end-to-end and shows as one trace in Jaeger) doesn't need any of the three, so they're built next as their own measured pass rather than ahead of the bar that would justify them.</li>
+    <li><strong>Rate limiting and caching fail open.</strong> A Redis outage means every request degrades to unmetered, uncached traffic rather than a 503 — a deliberate availability-over-enforcement choice for a Q&A service, but it genuinely removes abuse protection for the outage's duration. Stated as a tradeoff made on purpose, not a gap.</li>
+    <li><strong>A connection is opened per request rather than pooled.</strong> <code>psycopg_pool</code> is an installed extra but unused — the simplest thing that works, not optimized ahead of a concurrency number that has never actually been measured.</li>
+    <li><strong>API keys have no expiry.</strong> A key is valid until explicitly revoked; there's no TTL or forced rotation. Revocation exists (<code>revoked_at</code>), rotation policy does not.</li>
     <li><strong>Re-indexing a git_url repo re-clones from scratch.</strong> The worker wipes any existing checkout under <code>clone_workdir</code> and clones fresh every time rather than fetching incrementally. Correct, but not the fast path — Phase 13's incremental re-index is what replaces this with a real diff against <code>last_indexed_sha</code>.</li>
     <li><strong>The SSRF guard is an allowlist, not a general defense.</strong> Only <code>github.com</code>/<code>gitlab.com</code>/<code>bitbucket.org</code> can be cloned from out of the box. A self-hosted git server needs its host added to <code>allowed_clone_hosts</code> explicitly — a deliberate default-deny, not a gap, but worth stating precisely rather than implying broader coverage.</li>
     <li><strong>Incremental re-indexing only makes embedding cheap, not cloning or graph rebuild.</strong> A <code>git_url</code> repo still gets a full fresh <code>--depth 1</code> clone on every incremental run (Phase 12's clone behavior is unchanged), and the call graph is fully re-extracted and rebuilt from every currently-present file every time, not diffed. Only chunk-level embedding is genuinely incremental. Stated precisely because "incremental re-indexing" could otherwise imply more than this phase actually delivers.</li>

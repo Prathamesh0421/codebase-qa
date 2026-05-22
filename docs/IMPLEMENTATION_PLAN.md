@@ -616,7 +616,7 @@ Jaeger's HTTP API directly and confirmed one trace with `locate` and
 `trace` correctly nested under a `query` span, itself nested under the
 FastAPI-instrumented request span.
 
-### Phase 14b — Auth, rate limiting, cache, and degradation `[ ]`
+### Phase 14b — Auth, rate limiting, cache, and degradation `[x]`
 
 - API-key auth (hashed), Redis per-key token bucket, query cache.
 - Retries with backoff, graceful degradation for the remaining failure
@@ -630,6 +630,50 @@ questions *and* repo scope.
 rate-limited client gets a clear 429 (not silently queued or dropped), and
 a cache hit skips retrieval and synthesis entirely (asserted on mocked call
 counts).
+
+**Built:** `api/auth.py` (`create_api_key`/`verify_api_key`/`revoke_api_key`,
+SHA-256 over the `api_keys` schema from Phase 0's migration -- plaintext
+shown once via `codeqa keys create`, never persisted), `api/rate_limit.py`
+(`RateLimiter`, a Redis token bucket via one Lua `EVAL` script so the
+read-refill-consume-write sequence is atomic against two concurrent
+requests for the same key -- a plain GET-then-SET from Python would race
+them into both reading the same starting count), `api/cache.py`
+(`QueryCache`, keyed on `(repo_id, normalized_question, last_indexed_sha)`
+-- the sha makes a re-index a natural cache bust with no invalidation logic,
+since the old key just stops being asked for). `require_api_key` (a FastAPI
+dependency) gates every route except `GET /health`, which stays open for
+infra probes that can't carry a key. Rate limiting and the cache check both
+run inside `/v1/query`'s route function, before `EventSourceResponse` is
+ever constructed -- once SSE headers go out the response is committed to
+200, so a 429 has to be a real HTTP error raised before that point, not an
+SSE `error` event. Both the rate limiter and the cache fail *open* on a
+Redis error (log and continue) rather than failing the request -- a Redis
+outage means unmetered, uncached traffic, not a 503; the honest cost is
+that it also removes abuse protection for the outage's duration, a
+deliberate choice for a Q&A service where availability wins. `llm_max_retries`
+(unused since Phase 0) is now wired into every `litellm.completion` call via
+its native `max_retries` parameter rather than a hand-rolled backoff loop.
+
+27 new tests, 360 total green: `test_auth.py` (create/verify/revoke against
+real Postgres), `test_rate_limit.py` and `test_cache.py` (real Redis, not
+mocked -- specifically written to catch the failure mode a burst-only test
+would miss: `test_tokens_genuinely_refill_after_the_capacity_is_exhausted`
+drains a real bucket, sleeps past one real refill interval, and asserts
+exactly one more request succeeds, which would silently pass as "stuck at
+zero forever" under a naive test that only checks refusal), plus the two
+tests this phase's "done when" bar names as load-bearing:
+`test_a_rate_limited_key_gets_a_real_429_not_an_sse_error_event` (asserts
+`content-type` is `application/json`, not `text/event-stream`) and
+`test_a_cache_hit_skips_retrieval_entirely` (asserts `mock.call_count == 1`
+on the retrieval strategy across two identical requests -- a weaker
+body-comparison assertion would also pass if the cache did nothing and the
+pipeline just happened to be deterministic). Verified by hand against a
+live server and real Flask (`flask-eval`) too: created a real key via
+`codeqa keys create`'s underlying module, confirmed no-header and
+bad-key requests both get a real 401, confirmed `GET /health` needs no
+key, and fired 3 requests through a `rate_limit_rpm=2` key -- the first
+two returned `200 text/event-stream`, the third returned
+`429 application/json` with `{"detail": "rate limit exceeded"}`.
 
 ---
 

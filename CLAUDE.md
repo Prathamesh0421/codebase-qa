@@ -196,7 +196,35 @@ an impressive invented one.
   `query` span, itself nested under the FastAPI-instrumented request span.
   See "OTel spans need an explicit parent across a thread pool" below for a
   real bug this hand-verification caught that `TestClient` did not.
-- Everything past Phase 14a: not started.
+- **Phase 14b (auth, rate limiting, cache, degradation): done and reviewed.**
+  `api/auth.py` (SHA-256 keys over the `api_keys` schema, plaintext shown once
+  via `codeqa keys create`), `api/rate_limit.py` (`RateLimiter`, a Redis
+  token bucket via one Lua `EVAL` so the read-refill-consume-write sequence
+  is atomic against concurrent requests), `api/cache.py` (`QueryCache`, keyed
+  on `(repo_id, normalized_question, last_indexed_sha)` — the sha makes a
+  re-index a natural cache bust with no invalidation logic). `require_api_key`
+  gates every route except `GET /health`. Rate limit and cache checks both
+  run inside `/v1/query`'s route function, before `EventSourceResponse` is
+  constructed — a 429 has to be a real HTTP response, not an SSE event, and
+  that's only possible before the streaming response is committed. Both
+  fail *open* on a Redis error (unmetered/uncached, not a 503) — a
+  deliberate availability-over-enforcement choice, stated as a tradeoff, not
+  hidden as a default. `llm_max_retries` (unused since Phase 0) is now wired
+  into every `litellm.completion` call via its native `max_retries` param.
+  27 new tests, 360 total green — including
+  `test_tokens_genuinely_refill_after_the_capacity_is_exhausted` (a real
+  Redis sleep-past-refill test, not just burst-then-refuse, which is the
+  specific case a truncated-fractional-refill bug would pass), and the two
+  tests the phase's "done when" bar names directly: a rate-limited request
+  gets `429 application/json` (not an SSE `error` event), and a cache hit is
+  proven by `mock.call_count == 1` on the retrieval strategy across two
+  identical requests, not just a matching response body. Verified by hand
+  against a live server and real Flask: a real key created via
+  `codeqa keys create`'s module, no-header/bad-key requests both 401,
+  `/health` needs no key, and a `rate_limit_rpm=2` key let two requests
+  through (`200 text/event-stream`) before a real third got
+  `429 application/json`.
+- Everything past Phase 14b: not started.
 - **`tree-sitter` is pinned `>=0.25,<0.26`, and this pin is load-bearing.**
   0.26.0 segfaults the interpreter on Python 3.14.2 when reading
   `Node.start_point`/`end_point` during `QueryCursor.matches()` iteration on
@@ -414,6 +442,43 @@ Departures from the design doc, all agreed during review:
   bug would have shipped invisibly if verification had stopped at the
   integration test suite. Confirmed fixed by querying Jaeger's own HTTP API
   and checking span parent IDs directly, not just "no exception was raised."
+
+- **Rate limiting and caching fail open, and that's a stated tradeoff, not a
+  hidden default.** A Redis outage means every request falls through to
+  unmetered, uncached traffic — no rate limiting, no cache hits, straight to
+  the real pipeline — rather than a 503. Chosen because this is a Q&A
+  service where availability is worth more than strict abuse enforcement,
+  but the honest cost is real: a Redis outage genuinely removes abuse
+  protection for its duration. `api/rate_limit.py`'s `RateLimiter.allow` and
+  `api/cache.py`'s `QueryCache.get`/`set` all catch `redis.RedisError`
+  specifically (not a bare `except Exception`) and degrade to "allowed" /
+  "miss" / no-op respectively, each verified against a genuinely unreachable
+  Redis (a real connection to a closed port, not a mock) rather than assumed
+  from reading the `try`/`except`.
+
+- **A 429 has to happen before `EventSourceResponse` is constructed, not
+  inside the SSE generator.** Once SSE headers go out, the HTTP response is
+  committed to `200` — an "error" event inside the stream is not the same
+  thing as an HTTP status code a client's retry/backoff logic can act on.
+  `/v1/query`'s rate-limit check runs in the route function itself, before
+  the cache lookup and before `_stream_query`'s generator is ever
+  constructed, so a rate-limited request gets a real
+  `429 application/json` response. Verified directly: a dedicated test
+  asserts `content-type` is `application/json`, not `text/event-stream`, on
+  the rejected request — the distinction the design is actually protecting.
+
+- **Cache keys need the indexed commit, not just repo and question.**
+  Repo scope alone collides two different repos asked the same question
+  text; question text alone collides a question against stale content after
+  a re-index changes or removes the chunks an old cached answer cited —
+  which would otherwise surface, confusingly, as a Phase 11 grounding
+  failure on an answer that was true when it was cached. Folding
+  `repos.last_indexed_sha` into the cache key instead makes a re-index a
+  natural cache bust with no invalidation logic: the old key simply stops
+  being the one a post-reindex request asks for. Question normalization is
+  deliberately shallow — lowercase and collapsed whitespace only, no
+  stemming or stopword removal — because "how does X work" and "how does X
+  not work" must never collide onto the same cache entry.
 
 ## Invariants — do not violate
 
