@@ -1,0 +1,80 @@
+name: CI
+
+"on":
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: codeqa
+          POSTGRES_PASSWORD: codeqa
+          POSTGRES_DB: codeqa
+        ports:
+          - 5432:5432
+        # pg_isready returns before the server accepts real queries during
+        # first-run initdb -- same gotcha docker-compose.yml's own healthcheck
+        # comment documents -- so this runs an actual query instead.
+        options: >-
+          --health-cmd "psql -U codeqa -d codeqa -c 'SELECT 1' || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      CODEQA_DATABASE_URL: postgresql://codeqa:codeqa@localhost:5432/codeqa
+      CODEQA_TEST_DSN: postgresql://codeqa:codeqa@localhost:5432/codeqa
+      CODEQA_REDIS_URL: redis://localhost:6379/0
+      CODEQA_TEST_REDIS_URL: redis://localhost:6379/0
+      CODEQA_EMBEDDING_PROVIDER: local
+      CODEQA_EMBEDDING_MODEL: BAAI/bge-small-en-v1.5
+      CODEQA_EMBEDDING_DIM: "384"
+      CODEQA_RETRIEVAL_STRATEGY: naive
+      # No CODEQA_OTEL_ENDPOINT -- there's no Jaeger service in CI, and
+      # configure_tracing() treats an unset endpoint as a deliberate no-op
+      # rather than an error (see obs/tracing.py).
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      # sentence-transformers pulls the embedding model from the HF Hub on
+      # first use and pip pulls ~2GB of torch -- both are the slow, flaky
+      # part of this workflow if uncached, not the test suite itself.
+      - name: Cache pip and Hugging Face Hub downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.cache/huggingface
+          key: ${{ runner.os }}-py3.14-${{ hashFiles('pyproject.toml') }}
+
+      - name: Install codeqa (dev + local-embeddings extras)
+        run: pip install -e ".[dev,local-embeddings]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Apply database migrations
+        run: codeqa migrate
+
+      - name: Run tests
+        run: pytest -q
