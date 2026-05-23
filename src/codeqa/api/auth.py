@@ -58,7 +58,9 @@ def create_api_key(conn: psycopg.Connection, name: str, rate_limit_rpm: int) -> 
             """,
             (name, prefix, _hash_key(plaintext), rate_limit_rpm),
         )
-        key_id = cur.fetchone()[0]
+        row = cur.fetchone()
+        assert row is not None  # INSERT ... RETURNING always yields exactly one row
+        key_id = row[0]
     conn.commit()
     return CreatedApiKey(id=key_id, name=name, plaintext=plaintext, prefix=prefix)
 

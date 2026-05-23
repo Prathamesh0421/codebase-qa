@@ -35,7 +35,7 @@ _log = structlog.get_logger()
 @dataclass(frozen=True)
 class CachedAnswer:
     answer: str
-    chunks: list[dict]
+    chunks: list[dict[str, object]]
     citations_dropped: list[str]
 
 
