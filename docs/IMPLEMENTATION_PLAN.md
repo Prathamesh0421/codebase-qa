@@ -677,7 +677,7 @@ two returned `200 text/event-stream`, the third returned
 
 ---
 
-## Phase 15 — Tests and CI `[ ]`
+## Phase 15 — Tests and CI `[x]`
 
 - Unit: chunk boundaries, call extraction, grounding accept/reject, incremental
   file selection, traversal equivalence.
@@ -686,6 +686,71 @@ two returned `200 text/event-stream`, the third returned
 - GitHub Actions on every push.
 
 **Done when:** CI is green from a clean checkout.
+
+**Built:** the unit/integration bullets turned out to already be satisfied,
+incrementally, by every phase back to Phase 3 — this phase's actual net-new
+work is the CI workflow itself. Checked before writing any YAML rather than
+assumed:
+
+| Bullet | Already covered by |
+|---|---|
+| Chunk boundaries | `tests/unit/test_chunker.py` (17 tests, Phase 3) |
+| Call extraction | `tests/unit/test_extraction.py` (Phase 6) |
+| Grounding accept/reject | `tests/unit/test_grounding.py` (16 tests, Phase 11) |
+| Incremental file selection | `tests/unit/test_incremental_diff.py` (9 tests, Phase 13) |
+| Traversal equivalence | `tests/unit/test_bfs_over_graph.py` (14 tests, Phase 7) |
+| Index-then-ask on a fixture repo | `tests/integration/test_ask_cli.py` (Phase 5/11) |
+| Cache hit avoids re-running the pipeline | `test_a_cache_hit_skips_retrieval_entirely` (Phase 14b) |
+| LLM failure mid-chain degrades cleanly | `test_query_endpoint.py`'s error-event path (Phase 14a) |
+
+`.github/workflows/ci.yml`: one job, Postgres (`pgvector/pgvector:pg17`,
+pinned to match the schema notes) and Redis (`redis:7-alpine`) as service
+containers, `ruff check .` as a real gate (passes today), `codeqa migrate`
+before the suite runs, then `pytest -q`. The Postgres health check runs an
+actual `SELECT 1` rather than `pg_isready` — the same fix
+`docker-compose.yml`'s own health check already needed, since `pg_isready`
+returns healthy before the server accepts real queries during first-run
+`initdb`. `~/.cache/pip` and `~/.cache/huggingface` are both cached, since
+`sentence-transformers` pulling the embedding model from the Hugging Face
+Hub and pip pulling ~2GB of torch are the slow, network-dependent parts of
+this workflow, not the test suite itself. No `CODEQA_OTEL_ENDPOINT` is set —
+there's no Jaeger service in CI, and `configure_tracing` already treats an
+unset endpoint as a deliberate no-op (Phase 14a), not an error, so this
+needed no CI-specific branch anywhere in application code.
+
+`mypy` is deliberately left out of the CI gate. `[tool.mypy] strict = true`
+has been configured in `pyproject.toml` since Phase 0 but was never actually
+enforced — a full run surfaces 46 pre-existing errors across 21 files
+spanning Phase 1 through 14a, none introduced this phase. Folding a
+46-error, 21-file cleanup into a phase about wiring up CI would mean
+re-verifying code from a dozen earlier, already-reviewed phases under a
+different lens than they were built and reviewed against — a scope
+expansion the phase doesn't need to hit its own "done when" bar. Recorded
+as a known limit instead of silently dropped; see `docs/deep-dive.html`.
+
+One real bug found and fixed while preparing this phase, independent of CI
+itself: `test_tokens_genuinely_refill_after_the_capacity_is_exhausted`
+(Phase 14b) asserted a *second* post-sleep call was refused, which assumes
+`time.sleep(1.1)` never overshoots by more than a few hundred milliseconds.
+On a loaded CI runner it can, refilling more than one token and failing
+that assertion on scheduling jitter that has nothing to do with the bug the
+test exists to catch. Fixed by asserting only that a request succeeds after
+the sleep (proof the bucket didn't stay stuck at zero), not that exactly
+one token refilled.
+
+Verified locally as the closest available proxy for "CI is green from a
+clean checkout": a genuinely fresh `venv` (not this project's own
+15-phases-accumulated `.venv`), `pip install -e ".[dev,local-embeddings]"`
+from a clean `pyproject.toml` resolve, `codeqa migrate`, then the full
+360-test suite — all green, no manual state carried over. `actionlint`
+against the workflow file itself reports zero issues. **What this phase
+could not verify**: an actual GitHub Actions run turning green, because
+this repository has no configured git remote (`git remote -v` is empty) —
+there is nowhere to push to yet. Stated plainly rather than claimed: the
+individual pieces (install, migrate, lint, test) are proven to work
+correctly in the equivalent local conditions; a real CI run is the one
+thing still unverified, and would be the first thing to confirm the moment
+this repo gets a GitHub remote.
 
 ---
 

@@ -1939,6 +1939,85 @@
   let exactly two requests through (<code>200 text/event-stream</code>)
   before a genuine third got <code>429 application/json</code> with
   <code>{"detail": "rate limit exceeded"}</code>.</p>
+
+  <h3>Phase 15 — Tests and CI <span class="phase-status done">Done</span></h3>
+  <p>
+    Checked before writing any workflow YAML rather than assumed: this
+    phase's own unit/integration bullets — chunk boundaries, call
+    extraction, grounding accept/reject, incremental file selection,
+    traversal equivalence, index-then-ask, a cache hit skipping the
+    pipeline, an LLM failure degrading cleanly — were already satisfied,
+    incrementally, by tests written in Phases 3, 5, 6, 7, 11, 13, 14a, and
+    14b. The actual net-new work this phase produces is one file:
+    <code>.github/workflows/ci.yml</code>.
+  </p>
+  <p>
+    One job, Postgres (<code>pgvector/pgvector:pg17</code>, the same pin
+    the schema notes call load-bearing) and Redis
+    (<code>redis:7-alpine</code>) as service containers,
+    <code>ruff check .</code> as a real gate, <code>codeqa migrate</code>
+    ahead of the suite, then <code>pytest -q</code>. The Postgres health
+    check runs an actual <code>SELECT 1</code> rather than
+    <code>pg_isready</code> — the identical fix
+    <code>docker-compose.yml</code>'s own health check already needed,
+    since <code>pg_isready</code> reports healthy before the server accepts
+    real queries during first-run <code>initdb</code>. Pip and the Hugging
+    Face Hub cache are both cached between runs, since
+    <code>sentence-transformers</code> pulling the embedding model and pip
+    pulling ~2GB of torch are the slow, network-bound parts of this
+    workflow — the test suite itself is fast. No Jaeger service exists in
+    CI and none was added: <code>configure_tracing</code> already treats an
+    unset OTel endpoint as a deliberate no-op (Phase 14a), so this needed
+    zero CI-specific branching anywhere in application code.
+  </p>
+
+  <h4>mypy is configured, and has never once been enforced</h4>
+  <p>
+    <code>[tool.mypy] strict = true</code> has been sitting in
+    <code>pyproject.toml</code> since Phase 0. Wiring this phase's CI
+    workflow was the first time anyone actually ran it against the whole
+    tree — it surfaced <strong>46 pre-existing errors across 21 files</strong>,
+    spanning Phase 1 through 14a, none introduced by this phase. Folding a
+    46-error cleanup into a phase whose job is "wire up CI" would mean
+    re-touching a dozen already-reviewed phases' code under a stricter lens
+    than they were built and reviewed against — real work, but not this
+    phase's work, and not free: each fix would need re-verifying against
+    whatever that phase's own tests actually check. <code>ruff</code> goes
+    into the CI gate because it passes clean today, a real gate from day
+    one. <code>mypy</code> is recorded as a known limit instead — see Known
+    limits — rather than silently dropped or smuggled in as a surprise
+    scope expansion.
+  </p>
+
+  <p><strong>Results:</strong> one real, pre-existing bug fixed along the
+  way, independent of CI itself:
+  <code>test_tokens_genuinely_refill_after_the_capacity_is_exhausted</code>
+  (written in Phase 14b) asserted a <em>second</em> post-sleep call was
+  refused, which silently assumes <code>time.sleep(1.1)</code> never
+  overshoots by more than a few hundred milliseconds — true on a quiet
+  laptop, not guaranteed on a loaded CI runner, where scheduling jitter
+  could refill more than one token and fail an assertion that has nothing
+  to do with the bug the test exists to catch. Fixed by asserting only that
+  a request succeeds again after the sleep — proof the bucket didn't stay
+  stuck at zero — not that exactly one token refilled. Verified locally as
+  the closest available proxy for "CI is green from a clean checkout": a
+  genuinely fresh venv, not this project's own 15-phases-accumulated one,
+  <code>pip install -e ".[dev,local-embeddings]"</code> from a clean
+  resolve, <code>codeqa migrate</code>, then the full 360-test suite — all
+  green, no carried-over state. <code>actionlint</code> reports zero issues
+  against the workflow file itself.</p>
+  <p>
+    <strong>What this phase could not verify:</strong> an actual GitHub
+    Actions run turning green. This repository has no configured git
+    remote — there's nowhere to push to yet. Stated plainly rather than
+    claimed, the same "no invented metrics" stance the eval harness and
+    every measured claim in this document already holds to: the individual
+    pieces (install, migrate, lint, test, and the health-check logic
+    proven in <code>docker-compose.yml</code>) are verified correct in the
+    equivalent local conditions; a real CI run is the one thing still
+    unverified, and is the first thing to confirm the moment this repo
+    gets a GitHub remote.
+  </p>
 </section>
 
 <!-- ============================================================ 07 -->
@@ -2997,6 +3076,8 @@
     <li><strong>Rate limiting and caching fail open.</strong> A Redis outage means every request degrades to unmetered, uncached traffic rather than a 503 — a deliberate availability-over-enforcement choice for a Q&A service, but it genuinely removes abuse protection for the outage's duration. Stated as a tradeoff made on purpose, not a gap.</li>
     <li><strong>A connection is opened per request rather than pooled.</strong> <code>psycopg_pool</code> is an installed extra but unused — the simplest thing that works, not optimized ahead of a concurrency number that has never actually been measured.</li>
     <li><strong>API keys have no expiry.</strong> A key is valid until explicitly revoked; there's no TTL or forced rotation. Revocation exists (<code>revoked_at</code>), rotation policy does not.</li>
+    <li><strong>mypy strict is configured, not enforced.</strong> <code>[tool.mypy] strict = true</code> has been in <code>pyproject.toml</code> since Phase 0; CI runs <code>ruff</code>, not <code>mypy</code>. A full run surfaces 46 pre-existing errors across 21 files, Phase 1 through 14a — mostly unchecked <code>fetchone()</code> results and bare generic types. None from Phase 15 itself; recorded here rather than silently dropped.</li>
+    <li><strong>No GitHub Actions run has actually gone green.</strong> The workflow's individual steps (install, migrate, lint, test) are verified in an equivalent clean local environment, and <code>actionlint</code> reports zero issues against the YAML itself — but this repository has no configured git remote, so no real CI run exists yet to point at. The one part of "CI is green from a clean checkout" that stays a claim until there's somewhere to push.</li>
     <li><strong>Re-indexing a git_url repo re-clones from scratch.</strong> The worker wipes any existing checkout under <code>clone_workdir</code> and clones fresh every time rather than fetching incrementally. Correct, but not the fast path — Phase 13's incremental re-index is what replaces this with a real diff against <code>last_indexed_sha</code>.</li>
     <li><strong>The SSRF guard is an allowlist, not a general defense.</strong> Only <code>github.com</code>/<code>gitlab.com</code>/<code>bitbucket.org</code> can be cloned from out of the box. A self-hosted git server needs its host added to <code>allowed_clone_hosts</code> explicitly — a deliberate default-deny, not a gap, but worth stating precisely rather than implying broader coverage.</li>
     <li><strong>Incremental re-indexing only makes embedding cheap, not cloning or graph rebuild.</strong> A <code>git_url</code> repo still gets a full fresh <code>--depth 1</code> clone on every incremental run (Phase 12's clone behavior is unchanged), and the call graph is fully re-extracted and rebuilt from every currently-present file every time, not diffed. Only chunk-level embedding is genuinely incremental. Stated precisely because "incremental re-indexing" could otherwise imply more than this phase actually delivers.</li>

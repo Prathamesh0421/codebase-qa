@@ -224,7 +224,34 @@ an impressive invented one.
   `/health` needs no key, and a `rate_limit_rpm=2` key let two requests
   through (`200 text/event-stream`) before a real third got
   `429 application/json`.
-- Everything past Phase 14b: not started.
+- **Phase 15 (tests and CI): done and reviewed.** Checked before writing any
+  CI YAML rather than assumed: Phase 15's unit/integration test bullets
+  (chunk boundaries, call extraction, grounding accept/reject, incremental
+  file selection, traversal equivalence, index-then-ask, cache hit skips
+  the pipeline, LLM failure degrades cleanly) were already satisfied,
+  incrementally, by tests written in Phases 3, 5, 6, 7, 11, 13, 14a, and
+  14b — see the mapping table in `docs/IMPLEMENTATION_PLAN.md`. This
+  phase's actual net-new work is `.github/workflows/ci.yml`: one job,
+  Postgres (`pgvector/pgvector:pg17`) and Redis (`redis:7-alpine`) as
+  service containers, `ruff check .` as a real gate, `codeqa migrate` then
+  `pytest -q`. `mypy` is deliberately left out of the gate — `strict = true`
+  has been configured since Phase 0 but never enforced; a full run surfaces
+  46 pre-existing errors across 21 files from Phase 1 through 14a, none
+  introduced this phase, recorded as a known limit rather than folded into
+  a CI-wiring phase as a surprise 21-file cleanup. One real bug fixed along
+  the way, unrelated to CI itself: a Phase 14b rate-limit test asserted a
+  *second* post-sleep call was refused, which silently assumes
+  `time.sleep(1.1)` never overshoots — true on a quiet laptop, not
+  guaranteed on a loaded CI runner. Verified locally as the closest
+  available proxy for the "done when" bar: a genuinely fresh venv (not this
+  project's own accumulated `.venv`), a clean `pip install -e
+  ".[dev,local-embeddings]"`, `codeqa migrate`, then the full 360-test suite
+  — all green. `actionlint` reports zero issues against the workflow file.
+  **Honestly unverified**: an actual GitHub Actions run, since this repo
+  has no configured git remote yet — there's nowhere to push to. Stated
+  plainly rather than claimed, per this project's own "no invented
+  metrics" stance.
+- Everything past Phase 15: not started.
 - **`tree-sitter` is pinned `>=0.25,<0.26`, and this pin is load-bearing.**
   0.26.0 segfaults the interpreter on Python 3.14.2 when reading
   `Node.start_point`/`end_point` during `QueryCursor.matches()` iteration on
@@ -479,6 +506,19 @@ Departures from the design doc, all agreed during review:
   deliberately shallow — lowercase and collapsed whitespace only, no
   stemming or stopword removal — because "how does X work" and "how does X
   not work" must never collide onto the same cache entry.
+
+- **CI runs `ruff check .`, not `mypy`.** `[tool.mypy] strict = true` has
+  been configured since Phase 0 but never actually enforced anywhere —
+  wiring Phase 15's CI workflow was the first time anyone ran it against
+  the whole tree, and it surfaced 46 pre-existing errors across 21 files
+  from Phase 1 through 14a (mostly `fetchone()` results indexed without a
+  None-narrowing check, and bare `dict`/`list` generics missing type
+  arguments). Fixing all of it inside a phase whose actual job is "wire up
+  CI" would mean re-touching code from a dozen already-reviewed phases
+  under a stricter lens than they were built against — real work, but not
+  this phase's work. `ruff` passes clean today, so it's a real gate from
+  day one; `mypy` is recorded as a known limit instead of silently dropped
+  or bundled in as a surprise cleanup.
 
 ## Invariants — do not violate
 
