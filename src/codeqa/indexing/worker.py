@@ -85,6 +85,7 @@ def _run_job(conn: psycopg.Connection, job: Job, settings: Settings) -> None:
         embedder = build_embedder(
             settings.embedding_provider, model, dim,
             settings.embedding_batch_size, settings.embedding_api_key,
+            settings.llm_max_retries,
         )
         if job.kind == "incremental":
             stats = incremental_index_repo(conn, job.repo_id, root, embedder, commit_sha)

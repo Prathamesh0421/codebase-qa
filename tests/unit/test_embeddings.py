@@ -90,7 +90,26 @@ class TestHostedEmbedder:
             input=["def f(): pass"],
             dimensions=384,
             api_key="k",
+            num_retries=0,
         )
+
+    def test_extracts_vectors_from_dict_shaped_response(self):
+        # LiteLLM's EmbeddingResponse.data items aren't one consistent shape
+        # across providers -- verified directly against a live Cohere call
+        # that response.data[i] is a plain dict ({"embedding": [...]}), not
+        # an attribute-access object the way Gemini's is (the other test
+        # here, test_extracts_vectors_from_response). Both must work.
+        embedder = HostedEmbedder("cohere/embed-v4.0", dimension=3)
+        with patch("codeqa.indexing.embeddings.litellm.embedding") as mock_embed:
+            response = MagicMock()
+            response.data = [
+                {"object": "embedding", "index": 0, "embedding": [1.0, 2.0, 3.0]},
+                {"object": "embedding", "index": 1, "embedding": [4.0, 5.0, 6.0]},
+            ]
+            mock_embed.return_value = response
+            result = embedder.embed(["a", "b"])
+
+        assert result == [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
 
     def test_extracts_vectors_from_response(self):
         embedder = HostedEmbedder("gemini/gemini-embedding-001", dimension=3)
@@ -115,6 +134,46 @@ class TestHostedEmbedder:
             mock_embed.return_value = self._mock_response([[0.1] * 768])
             with pytest.raises(DimensionMismatch, match="768-dim.*expected 384"):
                 embedder.embed(["def f(): pass"])
+
+    def test_input_over_batch_size_splits_into_multiple_calls(self):
+        # Gemini rejects a single embedContent batch over 100 items -- found
+        # against a real live key indexing Flask's ~450 chunks in one call.
+        embedder = HostedEmbedder("gemini/gemini-embedding-001", dimension=3, batch_size=2)
+        texts = ["a", "b", "c", "d", "e"]
+        with patch("codeqa.indexing.embeddings.litellm.embedding") as mock_embed:
+            mock_embed.side_effect = [
+                self._mock_response([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+                self._mock_response([[0.0, 0.0, 1.0], [1.0, 1.0, 0.0]]),
+                self._mock_response([[0.0, 1.0, 1.0]]),
+            ]
+            result = embedder.embed(texts)
+
+        assert mock_embed.call_count == 3
+        assert [call.kwargs["input"] for call in mock_embed.call_args_list] == [
+            ["a", "b"],
+            ["c", "d"],
+            ["e"],
+        ]
+        # Order-preserving across the split, same contract as a single call.
+        assert result == [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 1.0],
+        ]
+
+    def test_max_retries_passed_through_as_num_retries(self):
+        # litellm's generic retry-with-backoff wrapper reads "num_retries",
+        # not "max_retries" -- the latter is silently dropped for non-
+        # OpenAI/Azure providers, which Gemini is. Passing the wrong kwarg
+        # would look identical to no retries at all against a live 429.
+        embedder = HostedEmbedder("gemini/gemini-embedding-001", dimension=3, max_retries=5)
+        with patch("codeqa.indexing.embeddings.litellm.embedding") as mock_embed:
+            mock_embed.return_value = self._mock_response([[0.1, 0.2, 0.3]])
+            embedder.embed(["a"])
+
+        assert mock_embed.call_args.kwargs["num_retries"] == 5
 
 
 class TestBuildEmbedder:

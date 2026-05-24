@@ -1,7 +1,14 @@
 # Multi-stage so build tooling does not ship. Note what is NOT installed here:
-# the local-embeddings extra. The deployed image uses a hosted embedding API,
-# which keeps torch (~2GB) out of the runtime layer. Local embeddings are a
-# development and CI concern, where reproducibility matters more than size.
+# the local-embeddings extra. sentence-transformers + even a CPU-only torch
+# build peaks around 800MB RSS just loading the model and embedding a small
+# batch (measured directly, both PyTorch and ONNX Runtime backends -- ONNX
+# was only marginally smaller) -- comfortably over the 512MB free-tier RAM
+# cap of the host this image is meant to run on. Hosted embeddings (Cohere,
+# not Gemini -- see indexing/embeddings.py's HostedEmbedder docstring for
+# why Gemini's free-tier embedding quota made it a dead end too) keep this
+# image small and sidestep the memory ceiling entirely. Local stays the
+# dev/CI/eval-harness path, where reproducibility matters more than
+# footprint and there's no 512MB constraint.
 
 FROM python:3.14-slim AS builder
 
@@ -32,9 +39,18 @@ COPY --from=builder /wheels /wheels
 RUN pip install --no-cache-dir --no-index --find-links=/wheels codeqa \
     && rm -rf /wheels
 
+# config.py's clone_workdir defaults to ./data/repos, relative to the
+# process's cwd -- fine on a dev machine where the whole tree is
+# user-owned, but /app here is root-owned (created before USER switches
+# below), so the worker's git clone would fail with a permission error the
+# moment it tried to create it (found against a real deploy). Pre-creating
+# and chowning it is cheaper than moving the default elsewhere, and every
+# clone under it is reconstructible scratch space anyway -- nothing here
+# needs to survive a restart.
+RUN mkdir -p /app/data/repos && chown -R codeqa:codeqa /app/data
+
 USER codeqa
 
 EXPOSE 8000
 
-# Replaced in Phase 14 by the uvicorn entrypoint, once there is an app to run.
-CMD ["codeqa", "--help"]
+CMD ["uvicorn", "codeqa.api.app:app", "--host", "0.0.0.0", "--port", "8000"]

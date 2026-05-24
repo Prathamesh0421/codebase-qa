@@ -12,14 +12,44 @@ Provider choice is driven by indexing throughput, not answer quality:
             embedding, rather than embedding per file.
 
   hosted -- LiteLLM, provider-agnostic. Used for the deployed image, which
-            omits the local-embeddings extra to keep ~2GB of torch out of the
-            container. Correctness here is verified against LiteLLM's actual
-            request-building code (confirmed its `dimensions` argument maps
-            to Gemini's `outputDimensionality` field), and tested by mocking
-            at the litellm.embedding() boundary -- there is no live API key
-            in this environment, so real network behavior against Gemini or
-            any other hosted provider is NOT verified here. State that
-            honestly rather than claim more than was tested.
+            omits the local-embeddings extra: sentence-transformers plus even
+            a CPU-only torch peaks around 800MB RSS just loading the model
+            and embedding a small batch (measured directly, PyTorch and ONNX
+            Runtime backends both), over the 512MB free-tier RAM cap of the
+            host this image targets. Provider is Cohere (embed-v4.0), not
+            Gemini -- a real deployed run against a live Gemini key measured
+            its free tier at 100 embed requests per MINUTE, which fails any
+            repo bigger than ~100 chunks deterministically no matter how
+            retries are tuned.
+
+            Cohere's trial is better but still a real ceiling, not a fix:
+            2,000 inputs/minute sounds generous, but the binding constraint
+            turned out to be tokens, not request count -- 100,000 tokens per
+            minute (found the same way, by actually indexing Flask against a
+            live key: it fits comfortably under Gemini's 100-item cap in
+            item count but blows well past Cohere's token cap, since Flask's
+            source is ~200k+ tokens of chunk text). A repo has to fit under
+            ~100k tokens to index in a single quota window on this tier --
+            true for a small-to-medium repo, not for something Flask-sized.
+            This is a stated scope limit of the deployed instance, not
+            something batch_size or max_retries papers over: no client-side
+            retry changes how many tokens fit through a per-minute cap.
+            (Also found: litellm surfaces Cohere's 429 as a bare
+            APIConnectionError rather than RateLimitError, unlike Gemini's
+            proper RateLimitError -- num_retries may not even engage for it.
+            Noted as a known limitation of the dependency, not fixed here,
+            since pacing wouldn't fix the underlying ceiling anyway.)
+
+            The Gemini run also surfaced a hard per-call cap ("at most 100
+            requests can be in one batch"), which is what turned batch_size
+            from a LocalEmbedder-only construction arg into something
+            HostedEmbedder chunks requests by too -- Cohere's own per-call
+            cap is 96, and a different provider might allow more or fewer
+            still, which is exactly why it's a constructor argument and not
+            a hardcoded constant. `dimensions` is verified against LiteLLM's
+            actual request-building code for both providers (Gemini's
+            `outputDimensionality`, Cohere's `output_dimension` -- the latter
+            only valid on embed-v4 and newer, one of {256, 512, 1024, 1536}).
 
 Every embed() call is dimension-checked against config before its result is
 allowed to reach the pipeline -- the same invariant Phase 1's migration
@@ -94,30 +124,76 @@ class LocalEmbedder:
 
 class HostedEmbedder:
     """LiteLLM-backed embedding call, provider chosen by the model string
-    (e.g. "gemini/gemini-embedding-001"), never hardcoded to one vendor.
+    (e.g. "cohere/embed-v4.0"), never hardcoded to one vendor -- proved out
+    by actually swapping it once already: the deployed model went from
+    Gemini to Cohere as a one-line config change (model string + dimension),
+    no code here changed, because nothing here is Gemini- or Cohere-specific.
 
-    No client-side request batching: the whole input list goes in one
-    litellm.embedding() call. Real hosted APIs have per-request size limits
-    that would eventually require splitting large inputs, but that number is
-    provider-specific and unverifiable without a live key in this
-    environment -- deferred rather than guessed at.
+    batch_size chunks the input list across multiple litellm.embedding()
+    calls -- both hosted providers tried so far reject an unbounded single
+    request (Gemini: "at most 100 requests can be in one batch"; Cohere:
+    documented cap of 96 texts per call), found the first time by running a
+    real repo-wide index against a live key rather than assumed ahead of
+    time. Default matches LocalEmbedder's (64), comfortably under both
+    limits; a different hosted provider with a different real limit is
+    exactly why this is a constructor argument, not a hardcoded constant.
+
+    max_retries matters more here than batch_size alone fixes for a
+    per-minute-quota provider: a live Gemini run showed its free tier is
+    limited per-MINUTE-of-items, not just per-call
+    ("EmbedContentRequestsPerMinutePerUserPerProjectPerModel-FreeTier",
+    limit 100) -- indexing a few hundred chunks legitimately spans more
+    than one quota window, 429s included, no matter how the batches are
+    sized. num_retries is the kwarg litellm's generic retry-with-backoff
+    wrapper reads (verified against litellm's own utils.py: unlike
+    `max_retries`, which is silently dropped for non-OpenAI/Azure providers
+    -- see synthesis.py's litellm.completion calls, which may be no-ops for
+    Gemini for exactly that reason). Kept because it's a correct, real fix
+    for a transient burst -- but Cohere's actual trial ceiling turned out to
+    be a token-per-minute budget (100k), not request count, which no amount
+    of retrying gets past: a repo whose chunk text exceeds that per minute
+    hits a hard wall retries cannot solve, only pacing could (not
+    implemented -- see this module's docstring). num_retries still matters
+    for genuinely transient 429s under that ceiling; it just isn't a fix
+    for exceeding the ceiling itself.
     """
 
-    def __init__(self, model: str, dimension: int, api_key: str | None = None):
+    def __init__(
+        self,
+        model: str,
+        dimension: int,
+        api_key: str | None = None,
+        batch_size: int = 64,
+        max_retries: int = 0,
+    ):
         self.model_name = model
         self.dimension = dimension
         self._api_key = api_key
+        self._batch_size = batch_size
+        self._max_retries = max_retries
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        response = litellm.embedding(
-            model=self.model_name,
-            input=texts,
-            dimensions=self.dimension,
-            api_key=self._api_key,
-        )
-        result = [item.embedding for item in response.data]
+        result: list[list[float]] = []
+        for i in range(0, len(texts), self._batch_size):
+            batch = texts[i : i + self._batch_size]
+            response = litellm.embedding(
+                model=self.model_name,
+                input=batch,
+                dimensions=self.dimension,
+                api_key=self._api_key,
+                num_retries=self._max_retries,
+            )
+            # LiteLLM's EmbeddingResponse.data items are not one consistent
+            # shape across providers -- Gemini's are attribute-access
+            # objects (item.embedding), Cohere's (verified directly) are
+            # plain dicts (item["embedding"]). Handling both is the honest
+            # fix; assuming either one is a latent provider-swap bug.
+            result.extend(
+                item["embedding"] if isinstance(item, dict) else item.embedding
+                for item in response.data
+            )
         _check_dimensions(result, self.dimension, "HostedEmbedder")
         return result
 
@@ -128,12 +204,16 @@ def build_embedder(
     dimension: int,
     batch_size: int = 64,
     api_key: str | None = None,
+    max_retries: int = 0,
 ) -> EmbeddingProvider:
     """Construct the configured provider. Single call site so config.py's
     embedding_provider setting is the only place this decision is made.
+
+    max_retries is unused for "local" -- sentence-transformers runs
+    in-process, nothing to retry against.
     """
     if provider == "local":
         return LocalEmbedder(model, dimension, batch_size)
     if provider == "hosted":
-        return HostedEmbedder(model, dimension, api_key)
+        return HostedEmbedder(model, dimension, api_key, batch_size, max_retries)
     raise ValueError(f"unknown embedding provider: {provider!r}")

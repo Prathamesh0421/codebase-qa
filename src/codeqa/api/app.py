@@ -269,6 +269,7 @@ def _stream_query(
     embedder = build_embedder(
         settings.embedding_provider, embedding_model, embedding_dim,
         settings.embedding_batch_size, settings.embedding_api_key,
+        settings.llm_max_retries,
     )
     strategy = get_strategy(
         settings.retrieval_strategy,

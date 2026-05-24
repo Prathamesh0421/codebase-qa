@@ -1,0 +1,34 @@
+# Keeps deploy build contexts small -- the Dockerfile only ever COPYs
+# pyproject.toml, README.md, and src/, so nothing else here is ever used by
+# the build; it was only ever being uploaded to the builder on every deploy.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+.git/
+.github/
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+.env
+.env.local
+
+/var/
+/clones/
+*.log
+
+.vscode/
+.idea/
+.DS_Store
+
+tests/
+evals/
+docs/
