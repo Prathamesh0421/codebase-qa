@@ -24,7 +24,7 @@ from codeqa.indexing.jobs import reclaim_stale_jobs as _reclaim_stale_jobs
 from codeqa.indexing.pipeline import index_repo
 
 
-def _heartbeat_loop(dsn: str, job_id: int, interval: float, stop: threading.Event):
+def _heartbeat_loop(dsn: str, job_id: int, interval: float, stop: threading.Event) -> None:
     # Its own connection, not the worker's main one -- a psycopg Connection
     # is not safe to use concurrently from two threads, and index_repo is
     # running a long sequence of queries on the main connection at the same
@@ -46,7 +46,15 @@ def _run_job(conn: psycopg.Connection, job: Job, settings: Settings) -> None:
             """,
             (job.repo_id,),
         )
-        source_kind, source_ref, model, dim = cur.fetchone()
+        row = cur.fetchone()
+        if row is None:
+            # repo_id comes from an already-claimed job's own FK to repos,
+            # so a missing row here means real data corruption, not a race
+            # -- raised explicitly (not asserted) so fail_job's error column
+            # gets something an operator can act on, not a stripped-assert
+            # TypeError from unpacking None two lines down.
+            raise RuntimeError(f"repo {job.repo_id} referenced by job {job.id} does not exist")
+        source_kind, source_ref, model, dim = row
 
     base_workdir = Path(settings.clone_workdir)
     workdir = base_workdir / str(job.repo_id)

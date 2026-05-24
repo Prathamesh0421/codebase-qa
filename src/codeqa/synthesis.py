@@ -49,7 +49,7 @@ def format_context(chunks: list[RetrievedChunk]) -> str:
     return "\n\n".join(blocks)
 
 
-def build_messages(question: str, chunks: list[RetrievedChunk]) -> list[dict]:
+def build_messages(question: str, chunks: list[RetrievedChunk]) -> list[dict[str, str]]:
     context = format_context(chunks)
     return [
         {"role": "system", "content": _SYSTEM_PROMPT},

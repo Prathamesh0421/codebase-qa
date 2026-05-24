@@ -36,6 +36,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
+from types import ModuleType
 from typing import Literal
 
 from tree_sitter import Language
@@ -75,7 +76,7 @@ def get_language(spec: LanguageSpec) -> Language:
     return Language(spec._load_raw())
 
 
-def _tier1(name: str, extensions: tuple[str, ...], module) -> LanguageSpec:
+def _tier1(name: str, extensions: tuple[str, ...], module: ModuleType) -> LanguageSpec:
     """Grammars whose upstream TAGS_QUERY constant already has @reference.call."""
     query = module.TAGS_QUERY
     assert query and "reference.call" in query, (

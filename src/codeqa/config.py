@@ -35,7 +35,7 @@ class Settings(BaseSettings):
         description="Postgres with the vector extension available.",
     )
     redis_url: RedisDsn = Field(
-        default="redis://localhost:6379/0",
+        default=RedisDsn("redis://localhost:6379/0"),
         description="Query cache and per-key rate-limit buckets.",
     )
 

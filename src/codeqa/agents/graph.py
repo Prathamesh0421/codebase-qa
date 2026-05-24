@@ -33,15 +33,22 @@ def build_agent_graph(
     llm_api_key: str | None,
     parent_context: Context | None = None,
     llm_max_retries: int = 0,
-) -> CompiledStateGraph:
-    g: StateGraph = StateGraph(AgentState)
-    g.add_node("locate", make_locate_node(conn, embedder, strategy, top_k, parent_context))
+) -> CompiledStateGraph[AgentState]:
+    g: StateGraph[AgentState, None, AgentState, AgentState] = StateGraph(AgentState)
+    # The three ignores below: langgraph's add_node overloads don't resolve
+    # for a closure typed as Callable[[AgentState], dict[str, Any]], only
+    # for a literal def or a class __call__. Verified in isolation against
+    # langgraph 1.2.11 with a three-way minimal repro (top-level function:
+    # OK; class __call__: OK; Callable-typed closure: fails). The runtime
+    # contract is identical; this is a stub limitation, not a type error in
+    # the node factories.
+    g.add_node("locate", make_locate_node(conn, embedder, strategy, top_k, parent_context))  # type: ignore[call-overload]
     g.add_node(
-        "trace", make_trace_node(llm_model, llm_api_key, parent_context, llm_max_retries)
+        "trace", make_trace_node(llm_model, llm_api_key, parent_context, llm_max_retries)  # type: ignore[call-overload]
     )
     g.add_node(
         "synthesize",
-        make_synthesize_node(llm_model, llm_api_key, parent_context, llm_max_retries),
+        make_synthesize_node(llm_model, llm_api_key, parent_context, llm_max_retries),  # type: ignore[call-overload]
     )
 
     g.add_edge(START, "locate")

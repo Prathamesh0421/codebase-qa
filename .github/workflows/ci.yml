@@ -73,6 +73,9 @@ jobs:
       - name: Lint
         run: ruff check .
 
+      - name: Type check
+        run: mypy src/codeqa
+
       - name: Apply database migrations
         run: codeqa migrate
 

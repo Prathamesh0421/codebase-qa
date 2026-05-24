@@ -42,7 +42,9 @@ _ALWAYS_IGNORE = pathspec.PathSpec.from_lines(
 MAX_FILE_SIZE_BYTES = 512_000
 
 
-def _load_gitignore(root: Path) -> pathspec.PathSpec:
+def _load_gitignore(
+    root: Path,
+) -> pathspec.PathSpec[pathspec.patterns.gitignore.basic.GitIgnoreBasicPattern]:
     gitignore = root / ".gitignore"
     if not gitignore.is_file():
         return pathspec.PathSpec.from_lines("gitignore", [])

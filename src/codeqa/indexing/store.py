@@ -84,7 +84,9 @@ def register_repo(
                     default_branch, embedding_model, embedding_dim,
                 ),
             )
-            repo_id = cur.fetchone()[0]
+            row = cur.fetchone()
+            assert row is not None  # INSERT ... RETURNING always yields exactly one row
+            repo_id = int(row[0])
             cur.execute("SELECT create_repo_partition(%s)", (repo_id,))
         conn.commit()
         return repo_id
@@ -142,7 +144,9 @@ def upsert_file(
             """,
             (repo_id, path, language, tier, blob_sha, size_bytes),
         )
-        return cur.fetchone()[0]
+        row = cur.fetchone()
+        assert row is not None  # INSERT ... RETURNING always yields exactly one row
+        return int(row[0])
 
 
 def insert_chunks(
@@ -179,7 +183,9 @@ def insert_chunks(
                     chunk.start_line, chunk.end_line, chunk.content, chunk.content_sha, vector,
                 ),
             )
-            ids.append(cur.fetchone()[0])
+            row = cur.fetchone()
+            assert row is not None  # INSERT ... RETURNING always yields exactly one row
+            ids.append(int(row[0]))
     return ids
 
 

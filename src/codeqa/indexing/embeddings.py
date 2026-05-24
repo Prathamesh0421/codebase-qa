@@ -84,7 +84,10 @@ class LocalEmbedder:
         if not texts:
             return []
         vectors = self._model.encode(texts, batch_size=self._batch_size, show_progress_bar=False)
-        result = vectors.tolist()
+        # sentence-transformers' encode() is untyped (returns Any), so
+        # tolist()'s result is too -- the annotation here is the actual
+        # fix, not a cast: it's what tolist() on a 2D float array returns.
+        result: list[list[float]] = vectors.tolist()
         _check_dimensions(result, self.dimension, "LocalEmbedder")
         return result
 

@@ -93,7 +93,7 @@ def ground_answer(text: str, context_chunks: list[RetrievedChunk]) -> GroundingR
     grounded: list[Citation] = []
     dropped: list[Citation] = []
 
-    def _replace(m: re.Match) -> str:
+    def _replace(m: re.Match[str]) -> str:
         citation = Citation(
             file=m.group(1), start_line=int(m.group(2)), end_line=int(m.group(3)), raw=m.group(0)
         )

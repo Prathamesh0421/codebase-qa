@@ -24,7 +24,7 @@ You may add a brief reasoning explanation on the lines that follow.
 """
 
 
-def build_trace_messages(question: str, chunks: list[RetrievedChunk]) -> list[dict]:
+def build_trace_messages(question: str, chunks: list[RetrievedChunk]) -> list[dict[str, str]]:
     context = format_context(chunks)
     return [
         {"role": "system", "content": _TRACE_SYSTEM_PROMPT},

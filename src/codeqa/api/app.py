@@ -10,7 +10,8 @@ exist yet. Revisit once concurrency is actually measured.
 """
 
 import json
-from typing import Literal
+from collections.abc import Iterator
+from typing import Any, Literal
 
 import psycopg
 import redis
@@ -36,7 +37,7 @@ from codeqa.indexing.jobs import enqueue_job
 from codeqa.indexing.store import RepoAlreadyExists, register_repo
 from codeqa.obs.logging import configure_logging
 from codeqa.obs.tracing import configure_tracing, get_tracer
-from codeqa.retrieval.strategy import get_strategy
+from codeqa.retrieval.strategy import RetrievedChunk, get_strategy
 
 _settings = get_settings()
 configure_tracing("codeqa-api", _settings.otel_endpoint)
@@ -58,7 +59,7 @@ _rate_limiter = RateLimiter(_redis_client)
 _query_cache = QueryCache(_redis_client, _settings.cache_ttl_seconds)
 
 
-def get_conn(settings: Settings = Depends(get_settings)):  # noqa: B008
+def get_conn(settings: Settings = Depends(get_settings)) -> Iterator[psycopg.Connection]:  # noqa: B008
     conn = psycopg.connect(settings.dsn)
     try:
         yield conn
@@ -104,7 +105,7 @@ class JobStatusResponse(BaseModel):
     status: str
     attempts: int
     error: str | None
-    stats: dict
+    stats: dict[str, Any]
 
 
 @app.post("/v1/repos", response_model=CreateRepoResponse, status_code=201)
@@ -198,7 +199,7 @@ class QueryRequest(BaseModel):
     top_k: int | None = None
 
 
-def _replay_cached(cached: CachedAnswer):
+def _replay_cached(cached: CachedAnswer) -> Iterator[dict[str, Any]]:
     """A cache hit skips retrieval and synthesis entirely -- no locate/trace
     progress events, because neither node ran. The answer is replayed as a
     single token event rather than split back into per-token chunks: the
@@ -229,7 +230,7 @@ def _stream_query(
     settings: Settings,
     cache: QueryCache,
     last_indexed_sha: str | None,
-):
+) -> Iterator[dict[str, Any]]:
     """Runs the same locate -> trace -> synthesize graph as `codeqa ask
     --agent` (agents/graph.py), over HTTP instead of the terminal. A plain
     (sync) generator, not async def -- sse-starlette wraps it with
@@ -289,7 +290,7 @@ def _stream_query(
         max_attempts=settings.agent_max_attempts,
     )
 
-    final_chunks: list = []
+    final_chunks: list[RetrievedChunk] = []
     answer_tokens: list[str] = []
     try:
         for mode, payload in graph.stream(state, stream_mode=["updates", "custom"]):
@@ -297,6 +298,11 @@ def _stream_query(
                 answer_tokens.append(payload)
                 yield {"event": "token", "data": payload}
                 continue
+            # stream_mode as a list collapses payload's stubbed type to
+            # "dict[str, Any] | Any" (see cli.py's identical narrowing) --
+            # every non-"custom" mode payload is a {node_name: update} dict
+            # at runtime.
+            assert isinstance(payload, dict)
             for node_name, update in payload.items():
                 if node_name == "locate":
                     final_chunks = update["chunks"]

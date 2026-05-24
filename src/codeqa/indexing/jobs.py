@@ -47,7 +47,9 @@ def enqueue_job(conn: psycopg.Connection, repo_id: int, kind: str = "full") -> i
                 "INSERT INTO index_jobs (repo_id, kind) VALUES (%s, %s) RETURNING id",
                 (repo_id, kind),
             )
-            job_id = cur.fetchone()[0]
+            row = cur.fetchone()
+            assert row is not None  # INSERT ... RETURNING always yields exactly one row
+            job_id = int(row[0])
         conn.commit()
         return job_id
     except psycopg.errors.UniqueViolation as exc:
@@ -137,7 +139,11 @@ def reclaim_stale_jobs(
 
 
 def complete_job(
-    conn: psycopg.Connection, job_id: int, repo_id: int, commit_sha: str | None, stats: dict
+    conn: psycopg.Connection,
+    job_id: int,
+    repo_id: int,
+    commit_sha: str | None,
+    stats: dict[str, object],
 ) -> None:
     """Mark succeeded and update the repo's ready state in one transaction --
     delegates the repos update to mark_indexed (store.py) rather than

@@ -9,6 +9,9 @@ and build_embedder elsewhere in this project -- so every node is directly
 constructible and testable with a real or fake dependency, no graph required.
 """
 
+from collections.abc import Callable
+from typing import Any
+
 import litellm
 import psycopg
 from langgraph.config import get_stream_writer
@@ -30,8 +33,8 @@ def make_locate_node(
     strategy: RetrievalStrategy,
     top_k: int,
     parent_context: Context | None = None,
-):
-    def locate(state: AgentState) -> dict:
+) -> Callable[[AgentState], dict[str, Any]]:
+    def locate(state: AgentState) -> dict[str, Any]:
         # context=parent_context, not the ambient/"current" context: the API
         # path drives this node through a sync generator dispatched by
         # starlette's iterate_in_threadpool, which reuses OS threads across
@@ -64,8 +67,8 @@ def make_trace_node(
     api_key: str | None,
     parent_context: Context | None = None,
     max_retries: int = 0,
-):
-    def trace(state: AgentState) -> dict:
+) -> Callable[[AgentState], dict[str, Any]]:
+    def trace(state: AgentState) -> dict[str, Any]:
         with _tracer.start_as_current_span("trace", context=parent_context) as span:
             messages = build_trace_messages(state.question, state.chunks)
             # Non-streaming: this is a control-flow decision consumed by the
@@ -95,8 +98,8 @@ def make_synthesize_node(
     api_key: str | None,
     parent_context: Context | None = None,
     max_retries: int = 0,
-):
-    def synthesize_node(state: AgentState) -> dict:
+) -> Callable[[AgentState], dict[str, Any]]:
+    def synthesize_node(state: AgentState) -> dict[str, Any]:
         # get_stream_writer(), not a return-value generator: LangGraph nodes
         # return a single state update, so streaming has to go out-of-band
         # via a custom stream event per token -- verified interactively that

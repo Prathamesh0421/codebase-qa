@@ -11,9 +11,10 @@ import logging
 
 import structlog
 from opentelemetry import trace
+from structlog.typing import EventDict, WrappedLogger
 
 
-def _add_trace_id(logger, method_name, event_dict):
+def _add_trace_id(logger: WrappedLogger, method_name: str, event_dict: EventDict) -> EventDict:
     ctx = trace.get_current_span().get_span_context()
     if ctx.is_valid:
         event_dict["trace_id"] = format(ctx.trace_id, "032x")

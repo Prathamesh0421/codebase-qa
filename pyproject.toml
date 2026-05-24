@@ -98,6 +98,7 @@ dev = [
     # Test-only: the reference implementation that the production Postgres
     # recursive-CTE traversal is differential-tested against.
     "networkx>=3.6",
+    "types-networkx>=3.6",
     "ruff>=0.9",
     "mypy>=1.14",
 ]

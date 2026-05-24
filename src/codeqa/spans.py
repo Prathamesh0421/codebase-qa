@@ -13,8 +13,14 @@ from typing import Protocol
 
 
 class HasByteSpan(Protocol):
-    start_byte: int
-    end_byte: int
+    # Properties, not plain annotations: smallest_enclosing only ever reads
+    # these, and a bare `x: int` in a Protocol demands a settable attribute
+    # -- which neither Tag nor Chunk (both frozen dataclasses) offer. This
+    # is what the Protocol should have said from the start.
+    @property
+    def start_byte(self) -> int: ...
+    @property
+    def end_byte(self) -> int: ...
 
 
 def smallest_enclosing[T: HasByteSpan](span: HasByteSpan, candidates: list[T]) -> T | None:

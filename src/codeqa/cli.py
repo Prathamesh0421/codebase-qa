@@ -16,15 +16,15 @@ from codeqa.agents.graph import build_agent_graph
 from codeqa.agents.logic import sort_for_display
 from codeqa.agents.state import AgentState
 from codeqa.api.auth import create_api_key
-from codeqa.config import get_settings
+from codeqa.config import Settings, get_settings
 from codeqa.db import migrate as migrations
-from codeqa.grounding import ground_answer
-from codeqa.indexing.embeddings import build_embedder
+from codeqa.grounding import GroundingResult, ground_answer
+from codeqa.indexing.embeddings import EmbeddingProvider, build_embedder
 from codeqa.indexing.incremental import incremental_index_repo
 from codeqa.indexing.pipeline import index_repo
 from codeqa.indexing.store import RepoAlreadyExists, register_repo
 from codeqa.indexing.worker import run_worker
-from codeqa.retrieval.strategy import get_strategy
+from codeqa.retrieval.strategy import RetrievalStrategy, RetrievedChunk, get_strategy
 from codeqa.synthesis import synthesize
 
 app = typer.Typer(
@@ -211,7 +211,7 @@ def ask(
         conn.close()
 
 
-def _print_grounding_warning(result) -> None:
+def _print_grounding_warning(result: GroundingResult) -> None:
     """Phase 11: nothing here can un-print tokens the terminal already
     showed live, so this flags what grounding found instead of silently
     editing scrollback. A non-streaming caller would show result.text
@@ -228,7 +228,13 @@ def _print_grounding_warning(result) -> None:
 
 
 def _ask_direct(
-    conn, embedder, strategy, repo_id: int, question: str, top_k: int, settings
+    conn: psycopg.Connection,
+    embedder: EmbeddingProvider,
+    strategy: RetrievalStrategy,
+    repo_id: int,
+    question: str,
+    top_k: int,
+    settings: Settings,
 ) -> None:
     """The Phase 5 path: one retrieval call, one synthesize call. Left
     unchanged by Phase 10's agent pipeline -- --agent is opt-in, not a
@@ -272,7 +278,15 @@ def _ask_direct(
         console.print(f"  [dim]{c.score:.3f}[/]  {c.citation}  [cyan]{label}[/]")
 
 
-def _ask_agent(conn, embedder, strategy, repo_id: int, question: str, top_k: int, settings) -> None:
+def _ask_agent(
+    conn: psycopg.Connection,
+    embedder: EmbeddingProvider,
+    strategy: RetrievalStrategy,
+    repo_id: int,
+    question: str,
+    top_k: int,
+    settings: Settings,
+) -> None:
     """The Phase 10 path: locate -> trace -> synthesize, with trace able to
     route back to locate on insufficient context. stream_mode=["updates",
     "custom"] carries both per-node progress (so the retry, if it fires, is
@@ -295,7 +309,7 @@ def _ask_agent(conn, embedder, strategy, repo_id: int, question: str, top_k: int
     )
 
     console.print()
-    final_chunks: list = []
+    final_chunks: list[RetrievedChunk] = []
     final_answer = ""
     for mode, payload in graph.stream(state, stream_mode=["updates", "custom"]):
         if mode == "custom":
@@ -303,6 +317,12 @@ def _ask_agent(conn, embedder, strategy, repo_id: int, question: str, top_k: int
             # syntax must never be parsed as a rich markup tag.
             console.print(payload, end="", markup=False, highlight=False)
             continue
+        # stream_mode as a list makes langgraph's own stream() overloads
+        # collapse payload's type to "dict[str, Any] | Any" -- imprecise
+        # stubs, not a real ambiguity: every non-"custom" mode payload is a
+        # {node_name: update} dict at runtime. Narrows the type rather than
+        # asserting away a real unknown.
+        assert isinstance(payload, dict)
         for node_name, update in payload.items():
             if node_name == "locate":
                 final_chunks = update["chunks"]

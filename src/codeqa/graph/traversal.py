@@ -138,7 +138,7 @@ def traverse_sql(
 
 
 def bfs_over_graph(
-    graph: nx.DiGraph,
+    graph: nx.DiGraph[int],
     start_chunk_id: int,
     direction: Direction,
     max_depth: int,
@@ -181,7 +181,7 @@ def traverse_networkx(
     """
     import networkx as nx  # noqa: PLC0415 -- lazy: see module docstring
 
-    graph = nx.DiGraph()
+    graph: nx.DiGraph[int] = nx.DiGraph()
     with conn.cursor() as cur:
         cur.execute(
             "SELECT caller_chunk_id, callee_chunk_id FROM call_edges "

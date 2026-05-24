@@ -13,6 +13,8 @@ lexical search alone cannot find a chunk by its qualified name -- only an
 exact-match WHERE clause can.
 """
 
+from typing import Any
+
 import psycopg
 
 from codeqa.graph.traversal import traverse_sql
@@ -70,13 +72,17 @@ _HYDRATE_QUERY = """
 """
 
 
-def _fetch_ranking(conn: psycopg.Connection, query: str, params: dict) -> list[int]:
+def _fetch_ranking(
+    conn: psycopg.Connection, query: str, params: dict[str, object]
+) -> list[int]:
     with conn.cursor() as cur:
         cur.execute(query, params)
         return [row[0] for row in cur.fetchall()]
 
 
-def _hydrate(conn: psycopg.Connection, repo_id: int, chunk_ids: list[int]) -> dict[int, tuple]:
+def _hydrate(
+    conn: psycopg.Connection, repo_id: int, chunk_ids: list[int]
+) -> dict[int, tuple[Any, ...]]:
     # ANY('{}') matches nothing in Postgres (verified interactively), but an
     # empty list is also the common case when there's simply nothing to
     # hydrate -- skip the round trip rather than relying on that behavior.
@@ -87,7 +93,7 @@ def _hydrate(conn: psycopg.Connection, repo_id: int, chunk_ids: list[int]) -> di
         return {row[0]: row for row in cur.fetchall()}
 
 
-def _to_chunk(row: tuple, score: float, source: str) -> RetrievedChunk:
+def _to_chunk(row: tuple[Any, ...], score: float, source: str) -> RetrievedChunk:
     return RetrievedChunk(
         chunk_id=row[0],
         file_path=row[1],
