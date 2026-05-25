@@ -1,0 +1,59 @@
+# Render Blueprint for the API web service. Just the API -- Render's free
+# tier has no free background-worker or cron-job option (verified against
+# Render's own docs: free plans are "not available for private services,
+# background workers, or cron jobs"), so codeqa worker runs instead as a
+# scheduled GitHub Actions workflow (.github/workflows/worker.yml),
+# invoking `codeqa worker --once` against the same Postgres/Redis.
+#
+# Postgres (Supabase) and Redis (Upstash) are provisioned outside this
+# Blueprint -- Render's own free Postgres expires 30 days after creation,
+# which is a worse fit than a managed free tier that doesn't.
+services:
+  - name: codeqa-api
+    type: web
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      # naive/hybrid/hybrid_graph all stay selectable by config (see
+      # CLAUDE.md's invariants) -- hybrid_graph is what the deployed demo
+      # should show off, since call-graph expansion is the one measured
+      # retrieval win (Phase 9).
+      - key: CODEQA_RETRIEVAL_STRATEGY
+        value: hybrid_graph
+      - key: CODEQA_RETRIEVAL_TOP_K
+        value: "10"
+      - key: CODEQA_GRAPH_MAX_DEPTH
+        value: "2"
+      # local embeddings need torch, which this image deliberately omits
+      # (Dockerfile) -- measured to peak ~800MB RSS, over the 512MB this
+      # free plan budgets for the whole container.
+      - key: CODEQA_EMBEDDING_PROVIDER
+        value: hosted
+      - key: CODEQA_EMBEDDING_MODEL
+        value: cohere/embed-v4.0
+      - key: CODEQA_EMBEDDING_DIM
+        value: "512"
+      - key: CODEQA_LLM_MODEL
+        value: gemini/gemini-3.6-flash
+      - key: CODEQA_LOG_LEVEL
+        value: INFO
+      - key: CODEQA_ENVIRONMENT
+        value: prod
+      # No CODEQA_OTEL_ENDPOINT -- there's no Jaeger deployed alongside
+      # this app, and configure_tracing() treats an unset endpoint as a
+      # deliberate no-op (obs/tracing.py), same stance CI already takes.
+      #
+      # sync: false -- Render prompts for these once at Blueprint creation
+      # and never stores the value in this file. All four are connection
+      # strings or API keys.
+      - key: CODEQA_DATABASE_URL
+        sync: false
+      - key: CODEQA_REDIS_URL
+        sync: false
+      - key: CODEQA_LLM_API_KEY
+        sync: false
+      - key: CODEQA_EMBEDDING_PROVIDER_API_KEY
+        sync: false

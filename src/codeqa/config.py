@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     graph_max_nodes: int = 40
 
     # ------------------------------------------------------------ llm
-    llm_model: str = "gemini/gemini-2.0-flash"
+    llm_model: str = "gemini/gemini-3.6-flash"
     llm_api_key: str | None = None
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 3

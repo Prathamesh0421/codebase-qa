@@ -1,0 +1,52 @@
+# Runs the indexing worker as a scheduled job rather than a long-lived
+# process. POST /v1/repos (Phase 12) only enqueues a job -- something has
+# to run run_worker's poll loop for a job to ever leave "queued", and
+# Render's free tier has no free background-worker or cron-job option
+# (verified against Render's own docs). `codeqa worker --once` already
+# exists for exactly this shape: claim at most one job, then exit, meant
+# to run as a supervised one-shot rather than the long-lived default --
+# see cli.py's worker command. A scheduled Action supervises it here.
+#
+# --depth 1: a shallow clone is all `codeqa worker --once` needs (it never
+# reads git history), and it's the only thing this job's runtime is spent
+# on besides the actual indexing work.
+name: Worker
+
+"on":
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  process-one-job:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      CODEQA_DATABASE_URL: ${{ secrets.CODEQA_DATABASE_URL }}
+      CODEQA_REDIS_URL: ${{ secrets.CODEQA_REDIS_URL }}
+      CODEQA_LLM_API_KEY: ${{ secrets.CODEQA_LLM_API_KEY }}
+      CODEQA_EMBEDDING_PROVIDER_API_KEY: ${{ secrets.CODEQA_EMBEDDING_PROVIDER_API_KEY }}
+      CODEQA_EMBEDDING_PROVIDER: hosted
+      CODEQA_EMBEDDING_MODEL: cohere/embed-v4.0
+      CODEQA_EMBEDDING_DIM: "512"
+      CODEQA_LLM_MODEL: gemini/gemini-3.6-flash
+      CODEQA_LOG_LEVEL: INFO
+      CODEQA_ENVIRONMENT: prod
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      # No local-embeddings extra -- this worker embeds via the same
+      # hosted Cohere path the deployed API uses, never torch.
+      - name: Install codeqa
+        run: pip install -e .
+
+      - name: Process at most one queued job
+        run: codeqa worker --once
