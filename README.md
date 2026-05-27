@@ -10,8 +10,9 @@ graph, pulling in a function's callers and callees. That is what lets it answer
 *"what happens between a request arriving and my view function running"* rather
 than only *"what does this one function do"*.
 
-> **Status: in development** — retrieval is measured (below); the agent
-> pipeline, API, and deployment are not yet built. See
+> **Status: deployed.** Retrieval is measured (below), the locate → trace →
+> synthesize agent pipeline is live behind a streaming API, and a VS Code
+> extension is the one remaining piece. See
 > [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) for
 > phase-by-phase progress.
 
@@ -74,6 +75,66 @@ codeqa config           # show resolved configuration
 ```
 
 Jaeger UI is at `localhost:16686`.
+
+## Deploying
+
+A genuinely free stack, not "free tier if you're careful": **Supabase**
+(Postgres + pgvector, no card), **Upstash** (Redis, no card), **Render**
+(the API, free web-service tier, no card), and a **GitHub Actions**
+scheduled workflow standing in for a worker process — Render's free tier
+has no free background-worker or cron option, confirmed against their own
+docs, so `.github/workflows/worker.yml` runs `codeqa worker --once` (the
+supervised one-shot mode `cli.py`'s `worker` command already had) every
+10 minutes instead. `render.yaml` is a Render Blueprint: `New → Blueprint`
+against this repo picks it up and prompts for four secrets
+(`CODEQA_DATABASE_URL`, `CODEQA_REDIS_URL`, `CODEQA_LLM_API_KEY`,
+`CODEQA_EMBEDDING_PROVIDER_API_KEY`) that never live in the file itself.
+The same four need setting as this repo's Actions secrets too, for the
+worker workflow.
+
+**Use Supabase's Session pooler connection string, not the direct one.**
+`db.<project>.supabase.co:5432` resolves to an IPv6-only address; GitHub
+Actions runners (and possibly other hosts) don't reliably have IPv6
+egress, which fails as `OperationalError: Network is unreachable` — a
+real error hit deploying this, not a hypothetical. The pooler hostname
+(`aws-<region>.pooler.supabase.com:5432`, **session** mode specifically,
+not transaction mode — transaction mode doesn't support prepared
+statements, which psycopg3 can use by default) is IPv4-compatible and
+works from anywhere.
+
+**Hosted embeddings are Cohere (`embed-v4.0`), not Gemini, and that
+wasn't the first thing tried.** Local embeddings (`sentence-transformers`)
+were tried first specifically to avoid any hosted quota at all, but a
+live measurement (PyTorch and ONNX Runtime backends both) put peak memory
+around 800MB just loading the model and embedding a handful of chunks —
+over the 512MB Render's free tier budgets for the whole container.
+Gemini's hosted embedding API was tried next and measured at a free-tier
+cap of 100 requests/minute, which fails any repo bigger than ~100 chunks
+outright. Cohere's trial tier raises that ceiling to about 100,000
+tokens/minute — real headroom for a small-to-medium repo, not unlimited:
+something Flask-sized (~450 chunks, 200k+ tokens) still doesn't fit in
+one quota window on this stack. That's a stated scope limit of the
+deployed instance, not a bug — index a large repo via the local CLI path
+instead, where `local` embeddings have no such ceiling.
+
+```bash
+# once you have Supabase/Upstash/Render accounts and a Cohere + Gemini key:
+CODEQA_DATABASE_URL="<supabase session pooler URL>" codeqa migrate
+CODEQA_DATABASE_URL="<supabase session pooler URL>" codeqa keys create --name vscode
+
+curl https://<your-render-service>.onrender.com/health
+curl https://<your-render-service>.onrender.com/v1/repos \
+  -H "Authorization: Bearer <key from codeqa keys create>" \
+  -H "Content-Type: application/json" \
+  -d '{"slug":"markupsafe","display_name":"MarkupSafe","source_kind":"git_url","source_ref":"https://github.com/pallets/markupsafe"}'
+# then, to actually process the queued job before the next scheduled run:
+gh workflow run worker.yml
+```
+
+`GET /health` needs no key and checks Postgres (gates the status code)
+and Redis (reported, doesn't gate — see the Phase 14b notes in
+`docs/deep-dive.html` on fail-open degradation). No Jaeger is deployed
+alongside this; tracing stays a local/dev concern.
 
 ## Tests
 

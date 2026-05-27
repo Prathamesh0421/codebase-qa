@@ -767,6 +767,37 @@ client.
 
 **Done when:** a published Marketplace listing works against the deployed backend.
 
+**Built so far — the backend half, verified live; the extension has not
+been started.** Deployed on a genuinely free stack (no card required for
+any of it): Supabase (Postgres + pgvector), Upstash (Redis), Render (the
+API, free web-service tier), and a GitHub Actions scheduled workflow
+(`.github/workflows/worker.yml`, `codeqa worker --once` every 10 minutes)
+standing in for a worker process, since Render's free tier has no free
+background-worker or cron option.
+
+Real dead ends along the way, each measured rather than assumed: Fly.io
+was fully provisioned and verified working (two real bugs found and fixed
+there: a root-owned `/app` breaking the worker's clone as the non-root
+user, and `HostedEmbedder` sending an entire repo in one embedding call),
+then destroyed once cost became a real concern with no truly-free
+always-on tier. Local embeddings were tried to avoid hosted quotas
+entirely, reverted after measuring ~800MB peak RSS against a 512MB
+free-tier budget. Gemini's hosted embedding API was tried next, measured
+at 100 requests/minute free-tier — unusable past ~100 chunks. Cohere
+(`embed-v4.0`) is the embedding provider that actually fit, at a real
+ceiling of ~100k tokens/minute — enough for a small-to-medium repo, not
+Flask-sized, which is now a stated scope limit of the deployed instance.
+See CLAUDE.md's Phase 16 entry for the full account, including the
+Supabase IPv6 pooler gotcha and the Gemini model retirement hit along the
+way.
+
+Verified against the live deployment, not just deployed: a real API key,
+a repo registered through the actual HTTPS `POST /v1/repos`, the GitHub
+Actions worker claiming and completing that job for real, and a full
+`POST /v1/query` SSE trace showing the agent retry firing (`trace`
+insufficient → refined query → sufficient) and a correctly-cited, fully
+-grounded streamed answer.
+
 ---
 
 ## Decisions taken

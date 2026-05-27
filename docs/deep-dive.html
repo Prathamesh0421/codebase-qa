@@ -494,6 +494,7 @@
   }
 
   .phase-status.done { background: var(--emerald-dim); color: var(--emerald); }
+  .phase-status.partial { background: var(--amber-dim); color: var(--amber); }
 
   .stack-note {
     font-family: var(--font-display);
@@ -526,7 +527,7 @@
 
 <nav class="toc">
   <div class="toc-brand">CodeQA Deep Dive</div>
-  <div class="toc-sub">Interview reference · updated through Phase&nbsp;1</div>
+  <div class="toc-sub">Interview reference · updated through Phase&nbsp;16 (backend)</div>
   <ol>
     <li><a href="#pitch"><span class="toc-num">01</span><span>Explaining it</span></a></li>
     <li><a href="#problem"><span class="toc-num">02</span><span>Problem &amp; thesis</span></a></li>
@@ -2007,16 +2008,72 @@
   green, no carried-over state. <code>actionlint</code> reports zero issues
   against the workflow file itself.</p>
   <p>
-    <strong>What this phase could not verify:</strong> an actual GitHub
-    Actions run turning green. This repository has no configured git
-    remote — there's nowhere to push to yet. Stated plainly rather than
-    claimed, the same "no invented metrics" stance the eval harness and
-    every measured claim in this document already holds to: the individual
-    pieces (install, migrate, lint, test, and the health-check logic
-    proven in <code>docker-compose.yml</code>) are verified correct in the
-    equivalent local conditions; a real CI run is the one thing still
-    unverified, and is the first thing to confirm the moment this repo
-    gets a GitHub remote.
+    <strong>What this phase could not verify at the time:</strong> an
+    actual GitHub Actions run turning green — this repository had no
+    configured git remote yet. Confirmed later, once Phase 16 pushed a
+    real remote: the first-ever run went green end to end, mypy step
+    included (added after this phase — see below).
+  </p>
+
+  <h4>Standalone maintenance, between Phase 15 and Phase 16</h4>
+  <p>
+    The 46 mypy errors above got fixed as their own pass, not folded into
+    a numbered phase. Method by method: <code>Protocol</code> members
+    rewritten as properties (a plain <code>x: int</code> annotation
+    demands a <em>settable</em> attribute, which frozen dataclasses like
+    <code>Tag</code>/<code>Chunk</code> don't offer), <code>fetchone()</code>
+    results narrowed before indexing, bare generics given concrete type
+    arguments. One error resisted a normal fix:
+    <code>StateGraph</code>'s <code>add_node</code> overloads don't
+    resolve against a closure typed as
+    <code>Callable[[S], dict[str, Any]]</code> — verified in isolation
+    (a three-way repro: a top-level function resolves fine, a class
+    <code>__call__</code> resolves fine, the same signature as a closure
+    doesn't) that this is a langgraph stub limitation, not a bug in the
+    node factories, so it's a single documented
+    <code>type: ignore[call-overload]</code> rather than a rewrite of a
+    tested, working architecture to appease a type checker.
+    <code>mypy src/codeqa</code> now runs right after <code>ruff</code>
+    in CI.
+  </p>
+
+  <h3>Phase 16 — Deploy and VS Code extension <span class="phase-status partial">Backend live, extension not started</span></h3>
+  <p>
+    The plan's own "done when" bar needs a published Marketplace listing,
+    so this phase isn't complete — recorded honestly as partial rather
+    than marked done on the easier half. What's live: the backend,
+    deployed on a genuinely free stack (no card required anywhere in it)
+    and verified against real traffic, not just deployed and assumed
+    working.
+  </p>
+  <p>
+    <strong>The stack:</strong> Supabase (Postgres + pgvector), Upstash
+    (Redis), Render (the API, free web-service tier), and a GitHub
+    Actions scheduled workflow standing in for a worker process — Render's
+    free tier has no free background-worker or cron-job option, confirmed
+    against Render's own docs before assuming otherwise, so
+    <code>.github/workflows/worker.yml</code> runs <code>codeqa worker
+    --once</code> (the supervised one-shot mode already built for exactly
+    this shape — see the Phase 12 log) on a 10-minute schedule instead of
+    a fourth Render service.
+  </p>
+  <p>
+    <strong>Verified live, not just deployed:</strong> a real API key
+    created against the deployed Postgres, a repo registered through the
+    actual HTTPS <code>POST /v1/repos</code>, the GitHub Actions worker
+    claiming and completing that job for real (repo status
+    <code>ready</code>, real chunk counts, real call-graph edges), and a
+    full <code>POST /v1/query</code> SSE trace showing the agent retry
+    firing for real — <code>trace</code> insufficient on attempt 1, a
+    refined query, sufficient on attempt 2 — ending in a correctly-cited,
+    fully-grounded streamed answer with zero dropped citations.
+  </p>
+  <p>
+    See War stories for the full account of what it took to get there:
+    a complete Fly.io deployment built, verified, and torn down over cost;
+    two hosted embedding providers tried and measured before one actually
+    fit the free tier's constraints; and a Postgres connection string that
+    looked identical to a working one but wasn't.
   </p>
 </section>
 
@@ -2313,6 +2370,55 @@
       <dd>Not just "no exception raised" — queried Jaeger's own HTTP API directly and checked span parent IDs in the response: <code>locate</code> and <code>trace</code> both correctly nested under <code>query</code>, itself nested under the FastAPI-instrumented request span, on every run after the fix.</dd>
       <dt>Lesson</dt>
       <dd>A test harness that doesn't reproduce a target environment's concurrency model can pass clean on a bug that only exists under real concurrency. And a fix that merely stops the crash isn't automatically the fix that produces correct behavior — the wrong-parent trace only surfaced by looking at the actual trace data, not by the absence of an error.</dd>
+    </dl>
+  </div>
+
+  <div class="story">
+    <span class="story-tag trap">A working deployment, torn down anyway</span>
+    <h3>Fly.io was fully built, verified, then destroyed over a constraint that wasn't on the table when it was chosen</h3>
+    <dl class="dl-grid">
+      <dt>Context</dt>
+      <dd>Fly.io was the deliberately-chosen host for exact image parity with everything already tested locally — the same <code>pgvector/pgvector:pg17</code> and <code>redis:7-alpine</code> images, not a managed product shipping an unverified pgvector version. Three apps were provisioned, two real bugs were found and fixed against the live deployment (a root-owned <code>/app</code> breaking the worker's git clone as the non-root <code>codeqa</code> user; <code>HostedEmbedder</code> sending an entire repo's chunks in one embedding call), and the full pipeline was verified end to end — a real repo registered through the real API, a real job processed, a real answer streamed back with grounded citations.</dd>
+      <dt>What changed</dt>
+      <dd>After all of that worked, the user said "I don't want to spend any money." Fly requires a card past its trial-org restriction and meters usage with no truly-free always-on tier — stopping the running machines only slowed the bleed (a 3GB volume still cost a small amount every month regardless of machine state), it didn't stop it.</dd>
+      <dt>Response</dt>
+      <dd>Every Fly app was destroyed the same session — <code>fly apps destroy</code> ×3 — and the stack was rebuilt on Supabase, Upstash, and Render specifically because none of the three require a card for their free tier. The two real bugs found on Fly (the permission fix, the embedding batch fix) carried over unchanged; the infrastructure choice didn't.</dd>
+      <dt>Lesson</dt>
+      <dd>A working, verified deployment isn't the same claim as an acceptable one — cost was never asked about before Fly was chosen, and once it was a real constraint, the engineering work already done (the two bug fixes) was worth keeping while the hosting decision itself was worth fully reversing. Sunk build time is not a reason to keep infrastructure that stopped fitting the actual requirements.</dd>
+    </dl>
+  </div>
+
+  <div class="story">
+    <span class="story-tag verified">Two dead ends, each measured before moving on</span>
+    <h3>Local embeddings avoided one quota and hit a RAM ceiling; the first hosted provider avoided the RAM ceiling and hit a worse quota</h3>
+    <dl class="dl-grid">
+      <dt>Starting point</dt>
+      <dd>The deployed image used Gemini's hosted embedding API. A live run indexing Flask hit <code>429 RESOURCE_EXHAUSTED</code> — Gemini's free tier caps embedding calls at 100 requests <em>per minute</em>, which fails any repo bigger than about 100 chunks outright, no amount of retry tuning included.</dd>
+      <dt>First attempt: go fully local</dt>
+      <dd><code>sentence-transformers</code>, to avoid any hosted quota at all. Worked functionally — but a direct memory measurement (<code>docker stats</code> during an actual embedding call, not an idle reading) showed peak RSS around 800MB just loading the model and embedding a handful of chunks, both with PyTorch and with an ONNX Runtime backend tried as a lighter alternative. The free-tier host this was meant to run on budgets 512MB for the <em>whole container</em>. Reverted, on measured numbers, not a guess about whether it might fit.</dd>
+      <dt>Second attempt: a different hosted provider</dt>
+      <dd>Cohere's <code>embed-v4.0</code>, trial tier advertised at 2,000 inputs/minute — 20× Gemini's cap. Indexing Flask again hit a 429 anyway. The actual error named a <em>different</em> quota dimension entirely: <code>EmbedContentRequestsPerMinutePerUserPerProjectPerModel</code> wasn't it — Cohere's real binding constraint turned out to be <strong>100,000 tokens per minute</strong>, not request count, and Flask's chunk text is 200k+ tokens. The advertised number and the number that actually bound were different axes of the same quota.</dd>
+      <dt>A second, unrelated surprise found along the way</dt>
+      <dd>Wiring <code>num_retries</code> (litellm's real retry-with-backoff kwarg, confirmed against its source — unlike <code>max_retries</code>, which litellm silently drops for non-OpenAI/Azure providers) didn't help Cohere's case, because litellm surfaces Cohere's 429 as a bare <code>APIConnectionError</code>, not a <code>RateLimitError</code> the way Gemini's is — the retry wrapper may not even recognize it as retryable. A second, independent inconsistency found the same day: <code>EmbeddingResponse.data</code> items are attribute-access objects for Gemini and plain dicts for Cohere, which is not documented anywhere obvious and only showed up as a live <code>AttributeError</code>.</dd>
+      <dt>Where it landed</dt>
+      <dd>Cohere stayed the provider — its real ceiling is high enough for a small-to-medium repo in one quota window, which is a genuine improvement over Gemini's, even though it's not the unlimited headroom the advertised number implied. A repo Flask's size is now a stated scope limit of the deployed instance, not a bug: no client-side retry logic changes how many tokens fit through a per-minute cap. The index-repo-via-local-CLI path has no such ceiling.</dd>
+      <dt>Lesson</dt>
+      <dd>Three real constraints in a row, each only knowable by actually running the thing against a live account: a RAM ceiling that only showed up under actual model inference, not at idle; an advertised rate limit that wasn't the binding one; and a client library's error handling that behaves differently per provider in ways its own README doesn't surface. "Measured, not assumed" isn't a slogan this project applies once — it's the reason three consecutive wrong first guesses each got caught before being shipped as the final answer.</dd>
+    </dl>
+  </div>
+
+  <div class="story">
+    <span class="story-tag trap">A connection string that looked complete and wasn't reachable</span>
+    <h3>Supabase's direct connection hostname is IPv6-only</h3>
+    <dl class="dl-grid">
+      <dt>Symptom</dt>
+      <dd>The GitHub Actions worker workflow, given <code>CODEQA_DATABASE_URL</code> pointed at <code>db.&lt;project&gt;.supabase.co:5432</code> — the same connection string that worked fine from a local machine — failed immediately: <code>OperationalError: connection to server at "2600:1f13:...", port 5432 failed: Network is unreachable</code>.</dd>
+      <dt>Root cause</dt>
+      <dd>That hostname resolves to an IPv6 address. The local machine it had been tested from has real IPv6 connectivity; GitHub Actions' <code>ubuntu-latest</code> runners do not reliably have IPv6 egress. Identical connection string, identical code, different network — one worked, one didn't, and the difference was invisible until the actual failing environment was the one making the connection.</dd>
+      <dt>Fix</dt>
+      <dd>Supabase's <strong>Session pooler</strong> connection string (<code>aws-&lt;region&gt;.pooler.supabase.com:5432</code>) is IPv4-compatible. Session mode specifically, not transaction mode on port 6543 — transaction mode doesn't support prepared statements, which psycopg3 can issue by default, and the worker's connection is long-lived across one whole indexing run rather than the many-short-transactions shape transaction pooling is built for.</dd>
+      <dt>Lesson</dt>
+      <dd>"Works from my machine" is a claim about that machine's network as much as about the code. The same string was later used for Render's deployment too, on the same reasoning — not because Render was confirmed to lack IPv6 egress, but because there was no reason to leave an unverified assumption in place a second time after it had already been wrong once.</dd>
     </dl>
   </div>
 </section>
@@ -3072,12 +3178,14 @@
     <li><strong>The labeled set never tests hybrid's actual purpose.</strong> All 25 questions are natural-language paraphrases with no literal identifiers in the query text — so hybrid's exact-symbol component, built specifically for "where is <code>dispatch_request</code> defined"-style questions, was never exercised. Its measured zero lift is honest for this set and not evidence it's unnecessary in general.</li>
     <li><strong>No load testing exists at any layer.</strong> Every performance-shaped claim in this document (indexing time, traversal query bounds) is architectural reasoning from one mid-size repo (Flask, 446 chunks), not a benchmark. Phase 14a gives the system real tracing to measure with; no load test has actually been run yet to produce a latency number from it.</li>
     <li><strong>The agent retry loop is measurably redundant with <code>hybrid_graph</code>.</strong> It's a real recall win under naive/hybrid but adds only noise once call-graph expansion already recovered everything reachable — two mechanisms for the same gap, and whichever runs first captures most of the benefit. Kept because a repo where bounded expansion doesn't reach far enough is a real, not hypothetical, case it still helps on.</li>
-    <li><strong>Every agent-pipeline test uses a mocked LLM.</strong> No live API key exists in this environment (same honesty boundary as Phases 5/8/9). <code>trace</code>'s sufficiency judgment has never been exercised against a real model's actual reasoning — only against hand-scripted <code>SUFFICIENT</code>/<code>INSUFFICIENT</code> responses. Whether a real LLM reliably produces the expected two-keyword format, and judges sufficiency well, is untested.</li>
+    <li><strong>The automated test suite's agent-pipeline tests still use a mocked LLM</strong> — real behavior is now verified separately, by hand, against the live deployment: a genuine <code>POST /v1/query</code> SSE trace against Render/Supabase/Cohere/Gemini showed <code>trace</code> correctly judging attempt 1 insufficient, refining the query, and judging attempt 2 sufficient, ending in a grounded answer. The mocked unit/integration tests remain useful for regression coverage of the control flow; they were just never the thing that proved a real model produces the expected two-keyword format.</li>
     <li><strong>Rate limiting and caching fail open.</strong> A Redis outage means every request degrades to unmetered, uncached traffic rather than a 503 — a deliberate availability-over-enforcement choice for a Q&A service, but it genuinely removes abuse protection for the outage's duration. Stated as a tradeoff made on purpose, not a gap.</li>
     <li><strong>A connection is opened per request rather than pooled.</strong> <code>psycopg_pool</code> is an installed extra but unused — the simplest thing that works, not optimized ahead of a concurrency number that has never actually been measured.</li>
     <li><strong>API keys have no expiry.</strong> A key is valid until explicitly revoked; there's no TTL or forced rotation. Revocation exists (<code>revoked_at</code>), rotation policy does not.</li>
-    <li><strong>mypy strict is configured, not enforced.</strong> <code>[tool.mypy] strict = true</code> has been in <code>pyproject.toml</code> since Phase 0; CI runs <code>ruff</code>, not <code>mypy</code>. A full run surfaces 46 pre-existing errors across 21 files, Phase 1 through 14a — mostly unchecked <code>fetchone()</code> results and bare generic types. None from Phase 15 itself; recorded here rather than silently dropped.</li>
-    <li><strong>No GitHub Actions run has actually gone green.</strong> The workflow's individual steps (install, migrate, lint, test) are verified in an equivalent clean local environment, and <code>actionlint</code> reports zero issues against the YAML itself — but this repository has no configured git remote, so no real CI run exists yet to point at. The one part of "CI is green from a clean checkout" that stays a claim until there's somewhere to push.</li>
+    <li><strong>One documented <code>type: ignore</code> remains in the otherwise-clean mypy run.</strong> <code>agents/graph.py</code>'s three <code>add_node</code> calls carry <code>type: ignore[call-overload]</code> — a verified langgraph stub limitation (its overloads resolve against a top-level function or a class <code>__call__</code>, not a closure typed as <code>Callable[[S], dict[str, Any]]</code>, which is the node-factory shape this project uses), not a bug in this project's code. <code>mypy src/codeqa</code> otherwise passes clean and runs in CI.</li>
+    <li><strong>The deployed instance can only index small-to-medium repos.</strong> Cohere's trial embedding tier caps at roughly 100,000 tokens per minute; a repo whose chunk text exceeds that in one indexing pass (Flask, at ~450 chunks and 200k+ tokens, is well past it) fails to index on the deployed backend, deterministically, regardless of retry tuning — no amount of client-side backoff changes how many tokens fit through a per-minute cap. Indexing a large repo still works via the local CLI path, where embeddings have no such ceiling. A stated scope limit of the free-tier deployment, not the architecture.</li>
+    <li><strong>The deployed worker runs on a schedule, not a persistent poll loop.</strong> A GitHub Actions workflow calls <code>codeqa worker --once</code> every 10 minutes, since Render's free tier has no free background-worker or cron option — a newly registered repo can sit in <code>queued</code> for up to that long before indexing actually starts, unlike a dedicated worker process that would pick it up within its normal poll interval.</li>
+    <li><strong>No user interface exists for the deployed backend yet.</strong> It's reachable only via direct HTTP calls (or the CLI, locally) — the planned VS Code extension (webview, SSE streaming, clickable citations) hasn't been started. See the Phase 16 log.</li>
     <li><strong>Re-indexing a git_url repo re-clones from scratch.</strong> The worker wipes any existing checkout under <code>clone_workdir</code> and clones fresh every time rather than fetching incrementally. Correct, but not the fast path — Phase 13's incremental re-index is what replaces this with a real diff against <code>last_indexed_sha</code>.</li>
     <li><strong>The SSRF guard is an allowlist, not a general defense.</strong> Only <code>github.com</code>/<code>gitlab.com</code>/<code>bitbucket.org</code> can be cloned from out of the box. A self-hosted git server needs its host added to <code>allowed_clone_hosts</code> explicitly — a deliberate default-deny, not a gap, but worth stating precisely rather than implying broader coverage.</li>
     <li><strong>Incremental re-indexing only makes embedding cheap, not cloning or graph rebuild.</strong> A <code>git_url</code> repo still gets a full fresh <code>--depth 1</code> clone on every incremental run (Phase 12's clone behavior is unchanged), and the call graph is fully re-extracted and rebuilt from every currently-present file every time, not diffed. Only chunk-level embedding is genuinely incremental. Stated precisely because "incremental re-indexing" could otherwise imply more than this phase actually delivers.</li>

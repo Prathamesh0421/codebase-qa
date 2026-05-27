@@ -251,7 +251,82 @@ an impressive invented one.
   has no configured git remote yet — there's nowhere to push to. Stated
   plainly rather than claimed, per this project's own "no invented
   metrics" stance.
-- Everything past Phase 15: not started.
+- **Correction to the record above, from standalone maintenance work
+  between Phase 15 and Phase 16**: the 46 pre-existing mypy errors are
+  fixed and `mypy src/codeqa` is now a real CI gate, run right after
+  `ruff check .`. One remaining `type: ignore[call-overload]` in
+  `agents/graph.py`, documented in place — a verified langgraph stub
+  limitation (its `add_node` overloads resolve against a top-level
+  function or a class `__call__`, not a closure typed as
+  `Callable[[S], dict[str, Any]]`, which is the node-factory shape
+  `agents/nodes.py` uses), not a bug in this project's code.
+- **Phase 16 (deploy and VS Code extension): backend half done and
+  verified live; extension not started.** The plan's own "done when" bar
+  needs a published Marketplace listing, so this phase isn't complete —
+  stated honestly rather than marked done on the easier half.
+
+  The backend is deployed on a genuinely free stack — Supabase
+  (Postgres + pgvector), Upstash (Redis), Render (the API, free
+  web-service tier), and a GitHub Actions scheduled workflow standing in
+  for a worker process, all chosen and re-chosen after real, measured
+  dead ends:
+
+  - **Fly.io was fully provisioned, verified working, then destroyed.**
+    `fly.toml` + two more for Postgres/Redis were written, deployed for
+    real (hit and fixed two real bugs there: a root-owned `/app` breaking
+    the worker's git clone as the non-root `codeqa` user, and
+    `HostedEmbedder` sending an entire repo's chunks in one
+    `litellm.embedding()` call). Destroyed after the user said "I don't
+    want to spend any money" — Fly requires a card past the trial-org
+    restriction and meters usage with no truly-free always-on tier.
+    Replaced with Supabase/Upstash/Render specifically because none of
+    the three require a card for their free tiers.
+  - **Render's free tier has no free background-worker or cron-job
+    option** (confirmed against Render's own docs: free plans are "not
+    available for private services, background workers, or cron jobs").
+    `.github/workflows/worker.yml` runs `codeqa worker --once` — the
+    supervised one-shot mode `cli.py`'s `worker` command already had —
+    on a 10-minute schedule instead of a fourth Render service.
+  - **Hosted embeddings ended up on Cohere, not Gemini, after two
+    measured dead ends.** Local embeddings (`sentence-transformers`) were
+    tried first, specifically to avoid any hosted quota — reverted after
+    measuring peak RSS around 800MB just loading the model and embedding
+    a handful of chunks (PyTorch and ONNX Runtime backends both), over
+    the 512MB Render's free tier budgets for the whole container. Gemini
+    was tried next and measured, against a live key, at a 100-requests-
+    per-minute free-tier cap that fails any repo over ~100 chunks
+    outright, no matter how retries are tuned. Cohere's trial tier
+    (`embed-v4.0`) raised the real ceiling to ~100,000 tokens/minute —
+    enough for a small-to-medium repo in one quota window, not for
+    something Flask-sized (~450 chunks, 200k+ tokens), which is a stated
+    scope limit of the deployed instance, not an engineering gap: no
+    amount of client-side retrying gets more tokens through a per-minute
+    cap. (Also found along the way: litellm's `EmbeddingResponse.data`
+    items aren't one consistent shape across providers — Cohere's are
+    plain dicts, Gemini's are attribute-access objects — and litellm
+    surfaces Cohere's 429 as a bare `APIConnectionError` rather than
+    `RateLimitError`, unlike Gemini's, so `num_retries` may not even
+    engage for it. Both handled or noted in `indexing/embeddings.py`.)
+  - **Supabase's direct connection string is IPv6-only and fails from
+    GitHub Actions runners** (`OperationalError: Network is
+    unreachable`) — real, not hypothetical, hit deploying the worker
+    workflow. Fixed by using Supabase's **Session pooler** connection
+    string instead (`aws-<region>.pooler.supabase.com:5432`), which is
+    IPv4-compatible. Session mode specifically, not transaction mode —
+    transaction mode doesn't support prepared statements, which psycopg3
+    can use by default.
+  - **`gemini/gemini-2.0-flash` has been retired.** Found via a live
+    404 ("no longer available... use models/gemini-3.6-flash"). Config
+    default and `.env.example` updated; `gemini-3.6-flash` verified
+    against a real call.
+
+  **Verified live, not just deployed**: a real API key created against
+  the deployed Postgres, a repo registered through the actual HTTPS
+  `POST /v1/repos`, the GitHub Actions worker claiming and completing
+  that job for real (repo status `ready`, real chunk counts), and a full
+  `POST /v1/query` SSE trace showing the agent retry firing for real
+  (`trace` insufficient on attempt 1, refined query, sufficient on
+  attempt 2) and a correctly-cited, fully-grounded streamed answer.
 - **`tree-sitter` is pinned `>=0.25,<0.26`, and this pin is load-bearing.**
   0.26.0 segfaults the interpreter on Python 3.14.2 when reading
   `Node.start_point`/`end_point` during `QueryCursor.matches()` iteration on
