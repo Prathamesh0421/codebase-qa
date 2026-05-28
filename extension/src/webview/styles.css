@@ -1,0 +1,140 @@
+/* Uses VS Code's own CSS custom properties throughout, not fixed colors --
+   this is what makes the panel automatically match whatever theme
+   (light/dark/high-contrast) the editor is running, with no theme-
+   detection logic needed here at all. */
+
+body {
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  padding: 12px;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+}
+
+#transcript {
+  flex: 1;
+  overflow-y: auto;
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* Each turn is one question/answer pair, appended and never removed --
+   a running transcript, not a single area overwritten on every ask. */
+.turn {
+  border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+  padding-bottom: 14px;
+}
+
+.turn-question {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.turn-question::before {
+  content: "> ";
+  color: var(--vscode-descriptionForeground);
+}
+
+/* turn-answer's content is real rendered HTML from marked.parse(), not
+   preformatted text -- headings/lists/code get their own rules below
+   rather than a blanket white-space: pre-wrap, which is for literal text
+   and would badly mis-space real block elements. */
+.turn-answer :first-child {
+  margin-top: 0;
+}
+.turn-answer :last-child {
+  margin-bottom: 0;
+}
+.turn-answer h1,
+.turn-answer h2,
+.turn-answer h3 {
+  font-size: 1em;
+  font-weight: 600;
+  margin: 12px 0 4px;
+}
+.turn-answer ul,
+.turn-answer ol {
+  margin: 4px 0;
+  padding-left: 22px;
+}
+.turn-answer code {
+  font-family: var(--vscode-editor-font-family);
+  background: var(--vscode-textCodeBlock-background);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.turn-answer pre {
+  background: var(--vscode-textCodeBlock-background);
+  padding: 8px 10px;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+.turn-answer pre code {
+  padding: 0;
+  background: none;
+}
+
+.turn-status {
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+  font-size: 0.9em;
+  margin-top: 6px;
+}
+
+.turn-status:empty {
+  display: none;
+}
+
+.citation {
+  color: var(--vscode-textLink-foreground);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.citation:hover {
+  color: var(--vscode-textLink-activeForeground);
+}
+
+#ask-form {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+#question {
+  flex: 1;
+  resize: vertical;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 2px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+#question:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+}
+
+button {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: none;
+  border-radius: 2px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--vscode-button-hoverBackground);
+}

@@ -1,0 +1,62 @@
+{
+  "name": "codeqa",
+  "displayName": "CodeQA",
+  "description": "Ask questions about a codebase, with call-graph-aware answers and clickable file:line citations.",
+  "version": "0.1.0",
+  "publisher": "prathamesh-sawant",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codeqa.ask",
+        "title": "CodeQA: Ask a Question"
+      },
+      {
+        "command": "codeqa.setApiKey",
+        "title": "CodeQA: Set API Key"
+      }
+    ],
+    "configuration": {
+      "title": "CodeQA",
+      "properties": {
+        "codeqa.backendUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Base URL of the deployed CodeQA API, e.g. https://codeqa-api.onrender.com"
+        },
+        "codeqa.defaultRepo": {
+          "type": "string",
+          "default": "",
+          "description": "Slug of the repo to query (as registered via POST /v1/repos or `codeqa keys create`)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "package": "node esbuild.js --production",
+    "vscode:prepublish": "npm run package",
+    "typecheck": "tsc --noEmit -p ./",
+    "pretest": "npm run compile",
+    "test": "node --test src/test/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^30.0.0",
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.90.0",
+    "esbuild": "^0.25.0",
+    "jsdom": "^30.0.1",
+    "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "marked": "^18.0.10"
+  }
+}
