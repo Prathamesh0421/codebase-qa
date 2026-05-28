@@ -37,7 +37,7 @@ services:
       - key: CODEQA_EMBEDDING_DIM
         value: "512"
       - key: CODEQA_LLM_MODEL
-        value: gemini/gemini-3.6-flash
+        value: gemini/gemini-3.5-flash
       - key: CODEQA_LOG_LEVEL
         value: INFO
       - key: CODEQA_ENVIRONMENT

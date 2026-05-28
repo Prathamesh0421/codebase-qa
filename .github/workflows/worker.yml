@@ -30,7 +30,7 @@ jobs:
       CODEQA_EMBEDDING_PROVIDER: hosted
       CODEQA_EMBEDDING_MODEL: cohere/embed-v4.0
       CODEQA_EMBEDDING_DIM: "512"
-      CODEQA_LLM_MODEL: gemini/gemini-3.6-flash
+      CODEQA_LLM_MODEL: gemini/gemini-3.5-flash
       CODEQA_LOG_LEVEL: INFO
       CODEQA_ENVIRONMENT: prod
 
