@@ -27,3 +27,9 @@ htmlcov/
 .vscode/
 .idea/
 .DS_Store
+
+# Kept locally as a personal reference, deliberately not published to the
+# public GitHub remote -- see the README for what replaces them there.
+docs/IMPLEMENTATION_PLAN.md
+docs/deep-dive.html
+CLAUDE.md
